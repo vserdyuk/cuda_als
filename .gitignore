@@ -1,0 +1,10 @@
+# Specify filepatterns you want git to ignore.
+
+/*.o
+main
+/data/ml10M/ml-10M100K
+/data/ml10M
+!/data/ml10M/prepare_ml10M_data.py
+.directory
+core
+/Debug
