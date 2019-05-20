@@ -58,7 +58,7 @@ void initialize(float *data, unsigned size)
 		data[i] = .5*(i+1);
 }
 
-int main(void)
+int main_example(void)
 {
 	static const int WORK_SIZE = 65530;
 	float *data = new float[WORK_SIZE];
