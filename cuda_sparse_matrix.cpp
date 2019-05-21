@@ -20,35 +20,40 @@ static void load_file(std::string path, void **host_ptr, void **dev_ptr, size_t 
 	if(file_size != buf_size)
 		throw std::runtime_error("file size does not match buffer size");
 
-	CUDA_CHECK_RETURN(cudaMallocHost(host_ptr, buf_size));
+	CUDA_CHECK(cudaMallocHost(host_ptr, buf_size));
 
 	if(!ifs.read((char*)*host_ptr, buf_size))
 		throw std::runtime_error(path + ": " + std::strerror(errno));
 
-	CUDA_CHECK_RETURN(cudaMalloc(dev_ptr, buf_size));
-	CUDA_CHECK_RETURN(cudaMemcpy(*dev_ptr, *host_ptr, buf_size, cudaMemcpyHostToDevice));
+	CUDA_CHECK(cudaMalloc(dev_ptr, buf_size));
+	CUDA_CHECK(cudaMemcpy(*dev_ptr, *host_ptr, buf_size, cudaMemcpyHostToDevice));
 }
 
 cuda_sparse_matrix::cuda_sparse_matrix(size_t row_cnt, size_t col_cnt, size_t val_cnt):
-		row_cnt(row_cnt), col_cnt(col_cnt), val_cnt(val_cnt)
-{}
+		row_cnt(row_cnt), col_cnt(col_cnt), val_cnt(val_cnt) {
+	CUSPARSE_CHECK(cusparseCreateMatDescr(&cusparse_descr));
+	CUSPARSE_CHECK(cusparseSetMatType(cusparse_descr, CUSPARSE_MATRIX_TYPE_GENERAL));
+	CUSPARSE_CHECK(cusparseSetMatIndexBase(cusparse_descr, CUSPARSE_INDEX_BASE_ZERO));
+}
 
 cuda_sparse_matrix::~cuda_sparse_matrix(){
-	CUDA_CHECK_RETURN(cudaFreeHost(h_csr_coo_vals));
-	CUDA_CHECK_RETURN(cudaFreeHost(h_csr_row_ptrs));
-	CUDA_CHECK_RETURN(cudaFreeHost(h_csr_coo_col_idxs));
-	CUDA_CHECK_RETURN(cudaFreeHost(h_coo_row_idxs));
-	CUDA_CHECK_RETURN(cudaFreeHost(h_csc_vals));
-	CUDA_CHECK_RETURN(cudaFreeHost(h_csc_row_idxs));
-	CUDA_CHECK_RETURN(cudaFreeHost(h_csc_col_ptrs));
+	CUDA_CHECK(cudaFreeHost(h_csr_coo_vals));
+	CUDA_CHECK(cudaFreeHost(h_csr_row_ptrs));
+	CUDA_CHECK(cudaFreeHost(h_csr_coo_col_idxs));
+	CUDA_CHECK(cudaFreeHost(h_coo_row_idxs));
+	CUDA_CHECK(cudaFreeHost(h_csc_vals));
+	CUDA_CHECK(cudaFreeHost(h_csc_row_idxs));
+	CUDA_CHECK(cudaFreeHost(h_csc_col_ptrs));
 
-	CUDA_CHECK_RETURN(cudaFree(d_csr_coo_vals));
-	CUDA_CHECK_RETURN(cudaFree(d_csr_row_ptrs));
-	CUDA_CHECK_RETURN(cudaFree(d_csr_coo_col_idxs));
-	CUDA_CHECK_RETURN(cudaFree(d_coo_row_idxs));
-	CUDA_CHECK_RETURN(cudaFree(d_csc_vals));
-	CUDA_CHECK_RETURN(cudaFree(d_csc_row_idxs));
-	CUDA_CHECK_RETURN(cudaFree(d_csc_col_ptrs));
+	CUDA_CHECK(cudaFree(d_csr_coo_vals));
+	CUDA_CHECK(cudaFree(d_csr_row_ptrs));
+	CUDA_CHECK(cudaFree(d_csr_coo_col_idxs));
+	CUDA_CHECK(cudaFree(d_coo_row_idxs));
+	CUDA_CHECK(cudaFree(d_csc_vals));
+	CUDA_CHECK(cudaFree(d_csc_row_idxs));
+	CUDA_CHECK(cudaFree(d_csc_col_ptrs));
+
+	CUSPARSE_CHECK(cusparseDestroyMatDescr(cusparse_descr));
 }
 
 void cuda_sparse_matrix::load_csr(std::string vals_path, std::string row_ptrs_path, std::string col_idxs_path) {
