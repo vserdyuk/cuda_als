@@ -71,12 +71,19 @@ n = 13
 # In[5]:
 
 user,item,rating = np.loadtxt('ratings.dat', delimiter='::', dtype=np.int32,unpack=True)
+print("user")
 print(user)
+print("item")
 print(item)
+print("rating")
 print(rating)
+print("x(user)")
 print(np.max(user))
+print("max(item)")
 print(np.max(item))
+print("max(rating)")
 print(np.max(rating))
+print("user.size")
 print(user.size)
 
 
@@ -88,7 +95,9 @@ user_item = np.vstack((user, item))
 # In[7]:
 
 user_item_train, user_item_test, rating_train, rating_test = train_test_split(user_item.T, rating, test_size=10, random_state=42)
-nnz_train = 34
+
+
+nnz_train = 36
 nnz_test = 10
 
 
@@ -97,6 +106,8 @@ nnz_test = 10
 #for test data, we need COO format to calculate test RMSE
 #1-based to 0-based
 R_test_coo = coo_matrix((rating_test,(user_item_test[:,0] - 1,user_item_test[:,1] - 1)))
+#scipy does not guarantee coo row-major layout expected by cuSPARSE
+R_test_coo = R_test_coo.tocsr().tocoo()
 assert R_test_coo.nnz == nnz_test
 R_test_coo.data.astype(np.float32).tofile('R_test_coo.data.bin')
 R_test_coo.row.tofile('R_test_coo.row.bin')
@@ -105,11 +116,17 @@ R_test_coo.col.tofile('R_test_coo.col.bin')
 
 # In[9]:
 
+print("max(R_test_coo.data)")
 print(np.max(R_test_coo.data))
+print("max(R_test_coo.row)")
 print(np.max(R_test_coo.row))
+print("max(R_test_coo.col)")
 print(np.max(R_test_coo.col))
+print("R_test_coo.data")
 print(R_test_coo.data)
+print("R_test_coo.row")
 print(R_test_coo.row)
+print("R_test_coo.col")
 print(R_test_coo.col)
 
 
@@ -118,36 +135,50 @@ print(R_test_coo.col)
 test_data = np.fromfile('R_test_coo.data.bin',dtype=np.float32)
 test_row = np.fromfile('R_test_coo.row.bin', dtype=np.int32)
 test_col = np.fromfile('R_test_coo.col.bin',dtype=np.int32)
-print("-----")
+print("test_data")
 print(test_data[0:10])
+print("test_row")
 print(test_row[0:10])
+print("test_col")
 print(test_col[0:10])
-print("-----")
 
 # In[11]:
 
 #1-based to 0-based
 R_train_coo = coo_matrix((rating_train,(user_item_train[:,0] - 1,user_item_train[:,1] - 1)))
-
+#scipy does not guarantee coo row-major layout expected by cuSPARSE
+R_train_coo = R_train_coo.tocsr().tocoo()
 
 # In[12]:
 
+print("R_train_coo.data")
 print(R_train_coo.data)
+print("R_train_coo.row")
 print(R_train_coo.row)
+print("R_train_coo.col")
 print(R_train_coo.col)
+print("max(R_train_coo.data)")
 print(np.max(R_train_coo.data))
+print("max(R_train_coo.row)")
 print(np.max(R_train_coo.row))
+print("max(R_train_coo.col)")
 print(np.max(R_train_coo.col))
 
 
 # In[13]:
 
+print("unique(user).size")
 print(np.unique(user).size)
+print("unique(R_train_coo.row + 1).size")
 print(np.unique(R_train_coo.row + 1).size)
+print("unique(item).size")
 print(np.unique(item).size)
+print("unique(R_train_coo.col + 1).size")
 print(np.unique(R_train_coo.col + 1).size)
 
+print("unique(R_test_coo.row + 1).size")
 print(np.unique(R_test_coo.row + 1).size)
+print("unique(R_test_coo.col + 1).size")
 print(np.unique(R_test_coo.col + 1).size)
 
 
@@ -179,8 +210,11 @@ R_train_csc.indptr.tofile('R_train_csc.indptr.bin')
 
 # In[17]:
 
+print("R_train_csr.data")
 print(R_train_csr.data)
+print("R_train_csr.indptr")
 print(R_train_csr.indptr)
+print("R_train_csr.indices")
 print(R_train_csr.indices)
 
 
