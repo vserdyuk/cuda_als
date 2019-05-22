@@ -165,153 +165,299 @@ void als_model::train() {
 
 	for(size_t it = 0; it < iters; ++it) {
 		// ---------- update U ----------
+		{
+			float *d_RV;
 
-		float *d_RV;
+			// TODO: single array of max(m, n) * f allocated in model constructor
 
-		// TODO: single array of max(m, n) * f allocated in model constructor
+			CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_RV, m * f * sizeof(d_RV[0])));
 
-		CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_RV, m * f * sizeof(d_RV[0])));
+			const float alpha = 1.0f;
+			const float beta = 0.0f;
 
-		const float alpha = 1.0f;
-		const float beta = 0.0f;
+			// R * VT.T = RV
 
-		// R * VT.T = RV
+			CUSPARSE_CHECK(cusparseScsrmm2(
+					cusparse_handle,
+					CUSPARSE_OPERATION_NON_TRANSPOSE,
+					CUSPARSE_OPERATION_TRANSPOSE,
+					m,
+					f,
+					n,
+					train_ratings.val_cnt,
+					&alpha,
+					train_ratings.cusparse_descr,
+					train_ratings.d_csr_coo_vals,
+					train_ratings.d_csr_row_ptrs,
+					train_ratings.d_csr_coo_col_idxs,
+					d_VT,
+					f,
+					&beta,
+					d_RV,
+					m
+			));
 
-		CUSPARSE_CHECK(cusparseScsrmm2(
-				cusparse_handle,
-				CUSPARSE_OPERATION_NON_TRANSPOSE,
-				CUSPARSE_OPERATION_TRANSPOSE,
-				m,
-				f,
-				n,
-				train_ratings.val_cnt,
-				&alpha,
-				train_ratings.cusparse_descr,
-				train_ratings.d_csr_coo_vals,
-				train_ratings.d_csr_row_ptrs,
-				train_ratings.d_csr_coo_col_idxs,
-				d_VT,
-				f,
-				&beta,
-				d_RV,
-				m
-		));
+			// RV.T = RVT
 
-		// RV.T = RVT
+			CUBLAS_CHECK(cublasSgeam(
+					cublas_handle,
+					CUBLAS_OP_T,
+					CUBLAS_OP_N,
+					f,
+					m,
+					&alpha,
+					d_RV,
+					m,
+					&beta,
+					d_RVT,
+					f,
+					d_RVT,
+					f
+			));
 
-		CUBLAS_CHECK(cublasSgeam(
-				cublas_handle,
-				CUBLAS_OP_T,
-				CUBLAS_OP_N,
-				f,
-				m,
-				&alpha,
-				d_RV,
-				m,
-				&beta,
-				d_RVT,
-				f,
-				d_RVT,
-				f
-		));
+			CUDA_CHECK(cudaFree(d_RV));
 
-		CUDA_CHECK(cudaFree(d_RV));
-
-		// void calculate_vvts(float *vvts, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT) {
-		calculate_vvts<<<m, f>>>(
-				d_vvts,
-				train_ratings.d_csr_row_ptrs,
-				train_ratings.d_csr_coo_col_idxs,
-				lambda,
-				m,
-				f,
-				d_VT
-		);
+			// void calculate_vvts(float *vvts, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT) {
+			calculate_vvts<<<m, f>>>(
+					d_vvts,
+					train_ratings.d_csr_row_ptrs,
+					train_ratings.d_csr_coo_col_idxs,
+					lambda,
+					m,
+					f,
+					d_VT
+			);
 
 #ifdef DEBUG
-		CUDA_CHECK(cudaDeviceSynchronize());
+			CUDA_CHECK(cudaDeviceSynchronize());
 #endif
-		// TODO: single array of max(m, n) allocated in model constructor
+			// TODO: single array of max(m, n) allocated in model constructor
 
-		// host array of pointers to each device vvt
-		float **h_d_vvts_ptrs;
+			// host array of pointers to each device vvt
+			float **h_d_vvts_ptrs;
 
-		CUDA_CHECK(cudaMallocHost((void **)&h_d_vvts_ptrs, m * sizeof(h_d_vvts_ptrs[0])));
+			CUDA_CHECK(cudaMallocHost((void **)&h_d_vvts_ptrs, m * sizeof(h_d_vvts_ptrs[0])));
 
-		for(size_t i = 0; i < m; ++i) {
-			h_d_vvts_ptrs[i] = &d_vvts[i * f * f];
+			for(size_t i = 0; i < m; ++i) {
+				h_d_vvts_ptrs[i] = &d_vvts[i * f * f];
+			}
+
+			// device array of pointers to each device vvt
+			float **d_d_vvts_ptrs;
+
+			CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_vvts_ptrs, m * sizeof(d_d_vvts_ptrs[0])));
+			CUDA_CHECK(cudaMemcpy(d_d_vvts_ptrs, h_d_vvts_ptrs, m * sizeof(h_d_vvts_ptrs[0]), cudaMemcpyHostToDevice));
+
+			// required by cublasSgetrfBatched but not used for now
+			int *d_getrf_infos;
+
+			CUDA_CHECK(CUDA_MALLOC_DEVICE(&d_getrf_infos, m * sizeof(d_getrf_infos[0])));
+
+			// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
+			CUBLAS_CHECK(cublasSgetrfBatched(cublas_handle, f, d_d_vvts_ptrs, f, NULL, d_getrf_infos, m));
+
+#ifdef DEBUG
+			CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+
+			int getrs_info;
+
+			// host array of pointers to each device RVT column
+			float **h_d_RVT_ptrs;
+
+			CUDA_CHECK(cudaMallocHost((void **)&h_d_RVT_ptrs, m * sizeof(h_d_RVT_ptrs[0])));
+
+			for(size_t i = 0; i < m; ++i) {
+				h_d_RVT_ptrs[i] = &d_RVT[i * f];
+			}
+
+			// device array of pointers to each device RVT column
+			float **d_d_RVT_ptrs;
+
+			CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_RVT_ptrs, m * sizeof(d_d_vvts_ptrs[0])));
+			CUDA_CHECK(cudaMemcpy(d_d_RVT_ptrs, h_d_RVT_ptrs, m * sizeof(h_d_RVT_ptrs[0]), cudaMemcpyHostToDevice));
+
+			// d_RVT gets overwritten by result
+			// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
+			CUBLAS_CHECK(cublasSgetrsBatched(
+					cublas_handle,
+					CUBLAS_OP_N,
+					f,
+					1,
+					(const float * const *)d_d_vvts_ptrs,
+					f,
+					nullptr,
+					(float * const *)d_d_RVT_ptrs,
+					f,
+					&getrs_info,
+					m
+			));
+
+#ifdef DEBUG
+			CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+
+			// write result
+			CUDA_CHECK(cudaMemcpy(d_U, d_RVT, m * f * sizeof(d_RVT[0]), cudaMemcpyDeviceToDevice));
+
+			CUDA_CHECK(cudaFreeHost(h_d_vvts_ptrs));
+			CUDA_CHECK(cudaFree(d_d_vvts_ptrs));
+			CUDA_CHECK(cudaFree(d_getrf_infos));
+			CUDA_CHECK(cudaFreeHost(h_d_RVT_ptrs));
+			CUDA_CHECK(cudaFree(d_d_RVT_ptrs));
 		}
-
-		// device array of pointers to each device vvt
-		float **d_d_vvts_ptrs;
-
-		CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_vvts_ptrs, m * sizeof(d_d_vvts_ptrs[0])));
-		CUDA_CHECK(cudaMemcpy(d_d_vvts_ptrs, h_d_vvts_ptrs, m * sizeof(h_d_vvts_ptrs[0]), cudaMemcpyHostToDevice));
-
-		// required by cublasSgetrfBatched but not used for now
-		int *d_getrf_infos;
-
-		CUDA_CHECK(CUDA_MALLOC_DEVICE(&d_getrf_infos, m * sizeof(d_getrf_infos[0])));
-
-		// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
-		CUBLAS_CHECK(cublasSgetrfBatched(cublas_handle, f, d_d_vvts_ptrs, f, NULL, d_getrf_infos, m));
-
-#ifdef DEBUG
-		CUDA_CHECK(cudaDeviceSynchronize());
-#endif
-
-		int getrs_info;
-		
-		// host array of pointers to each device RVT column
-		float **h_d_RVT_ptrs;
-
-		CUDA_CHECK(cudaMallocHost((void **)&h_d_RVT_ptrs, m * sizeof(h_d_RVT_ptrs[0])));
-
-		for(size_t i = 0; i < m; ++i) {
-			h_d_RVT_ptrs[i] = &d_RVT[i * f];
-		}
-
-		// device array of pointers to each device RVT column
-		float **d_d_RVT_ptrs;
-
-		CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_RVT_ptrs, m * sizeof(d_d_vvts_ptrs[0])));
-		CUDA_CHECK(cudaMemcpy(d_d_RVT_ptrs, h_d_RVT_ptrs, m * sizeof(h_d_RVT_ptrs[0]), cudaMemcpyHostToDevice));
-
-		// d_RVT gets overwritten by result
-		// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
-		CUBLAS_CHECK(cublasSgetrsBatched(
-				cublas_handle,
-				CUBLAS_OP_N,
-				f,
-				1,
-				(const float * const *)d_d_vvts_ptrs,
-				f,
-				nullptr,
-				(float * const *)d_d_RVT_ptrs,
-				f,
-				&getrs_info,
-				m
-		));
-
-#ifdef DEBUG
-		CUDA_CHECK(cudaDeviceSynchronize());
-#endif
-
-		// write result
-		CUDA_CHECK(cudaMemcpy(d_U, d_RVT, m * f, cudaMemcpyDeviceToDevice));
-
-		CUDA_CHECK(cudaFree(h_d_vvts_ptrs));
-		CUDA_CHECK(cudaFree(d_d_vvts_ptrs));
-		CUDA_CHECK(cudaFree(d_getrf_infos));
-		CUDA_CHECK(cudaFree(h_d_RVT_ptrs));
-		CUDA_CHECK(cudaFree(d_d_RVT_ptrs));
-
 		// ---------- update V ----------
+		{
+			float *d_RTU;
 
-		// TODO
+			// TODO: single array of max(m, n) * f allocated in model constructor
 
-		int stop = 0;
+			CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_RTU, n * f * sizeof(d_RTU[0])));
+
+			const float alpha = 1.0f;
+			const float beta = 0.0f;
+
+			// RT * U = RTU
+
+			// https://docs.nvidia.com/cuda/cusparse/index.html#csc-format
+			// Note: The matrix A in CSR format has exactly the same memory layout as its transpose in CSC format (and vice versa).
+			CUSPARSE_CHECK(cusparseScsrmm2(
+					cusparse_handle,
+					CUSPARSE_OPERATION_NON_TRANSPOSE,
+					CUSPARSE_OPERATION_TRANSPOSE,
+					n,
+					f,
+					m,
+					train_ratings.val_cnt,
+					&alpha,
+					train_ratings.cusparse_descr,
+					train_ratings.d_csc_vals,
+					train_ratings.d_csc_col_ptrs,
+					train_ratings.d_csc_row_idxs,
+					d_U,
+					f,
+					&beta,
+					d_RTU,
+					n
+			));
+
+			// RTU.T = RTUT
+
+			CUBLAS_CHECK(cublasSgeam(
+					cublas_handle,
+					CUBLAS_OP_T,
+					CUBLAS_OP_N,
+					f,
+					n,
+					&alpha,
+					d_RTU,
+					n,
+					&beta,
+					d_RTUT,
+					f,
+					d_RTUT,
+					f
+			));
+
+			CUDA_CHECK(cudaFree(d_RTU));
+
+			// Function is named calculate_vvts but here we actually calculate uuts.
+			// Naming is kept for U update for easier debugging
+			// void calculate_vvts(float *vvts, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT) {
+			calculate_vvts<<<n, f>>>(
+					d_uuts,
+					train_ratings.d_csc_col_ptrs,
+					train_ratings.d_csc_row_idxs,
+					lambda,
+					n,
+					f,
+					d_U
+			);
+
+#ifdef DEBUG
+			CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+
+			// TODO: single array of max(m, n) allocated in model constructor
+
+			// host array of pointers to each device uut
+			float **h_d_uuts_ptrs;
+
+			CUDA_CHECK(cudaMallocHost((void **)&h_d_uuts_ptrs, n * sizeof(h_d_uuts_ptrs[0])));
+
+			for(size_t i = 0; i < n; ++i) {
+				h_d_uuts_ptrs[i] = &d_uuts[i * f * f];
+			}
+
+			// device array of pointers to each device uut
+			float **d_d_uuts_ptrs;
+
+			CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_uuts_ptrs, n * sizeof(d_d_uuts_ptrs[0])));
+			CUDA_CHECK(cudaMemcpy(d_d_uuts_ptrs, h_d_uuts_ptrs, n * sizeof(h_d_uuts_ptrs[0]), cudaMemcpyHostToDevice));
+
+			// required by cublasSgetrfBatched but not used for now
+			int *d_getrf_infos;
+
+			CUDA_CHECK(CUDA_MALLOC_DEVICE(&d_getrf_infos, n * sizeof(d_getrf_infos[0])));
+
+			// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
+			CUBLAS_CHECK(cublasSgetrfBatched(cublas_handle, f, d_d_uuts_ptrs, f, NULL, d_getrf_infos, n));
+
+#ifdef DEBUG
+			CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+
+			int getrs_info;
+
+			// host array of pointers to each device RTUT column
+			float **h_d_RTUT_ptrs;
+
+			CUDA_CHECK(cudaMallocHost((void **)&h_d_RTUT_ptrs, n * sizeof(h_d_RTUT_ptrs[0])));
+
+			for(size_t i = 0; i < n; ++i) {
+				h_d_RTUT_ptrs[i] = &d_RTUT[i * f];
+			}
+
+			// device array of pointers to each device RTUT column
+			float **d_d_RTUT_ptrs;
+
+			CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_RTUT_ptrs, n * sizeof(d_d_uuts_ptrs[0])));
+			CUDA_CHECK(cudaMemcpy(d_d_RTUT_ptrs, h_d_RTUT_ptrs, n * sizeof(h_d_RTUT_ptrs[0]), cudaMemcpyHostToDevice));
+
+			// d_RTUT gets overwritten by result
+			// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
+			CUBLAS_CHECK(cublasSgetrsBatched(
+					cublas_handle,
+					CUBLAS_OP_N,
+					f,
+					1,
+					(const float * const *)d_d_uuts_ptrs,
+					f,
+					nullptr,
+					(float * const *)d_d_RTUT_ptrs,
+					f,
+					&getrs_info,
+					n
+			));
+
+#ifdef DEBUG
+			CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+
+			// write result
+			CUDA_CHECK(cudaMemcpy(d_U, d_RTUT, n * f * sizeof(d_RTUT[0]), cudaMemcpyDeviceToDevice));
+
+			CUDA_CHECK(cudaFreeHost(h_d_uuts_ptrs));
+			CUDA_CHECK(cudaFree(d_d_uuts_ptrs));
+			CUDA_CHECK(cudaFree(d_getrf_infos));
+			CUDA_CHECK(cudaFreeHost(h_d_RTUT_ptrs));
+			CUDA_CHECK(cudaFree(d_d_RTUT_ptrs));
+		}
 	}
 
+	// final result from device to host
+
+	CUDA_CHECK(cudaMemcpy(h_VT, d_VT, m * f, cudaMemcpyDeviceToHost));
+	CUDA_CHECK(cudaMemcpy(h_U, d_U, n * f, cudaMemcpyDeviceToHost));
 }
 
