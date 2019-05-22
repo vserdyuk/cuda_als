@@ -26,7 +26,7 @@ struct als_model {
 
 	float *h_VT;	// host transposed global item factor matrix, n x f (thetaTHost)
 	float *d_VT;	// device transposed global item factor matrix, n x f (thetaT)
-	float *d_RVT;	// device ratings multiplied by global item factor matrix, f x m (ythetaT)
+	float *d_RVT;	// device ratings multiplied by transposed global item factor matrix, f x m (ythetaT)
 
 	float *h_U;		// host global user factor matrix, m x f (XTHost(XHost?))
 	float *d_U;		// device global user factor matrix, m x f (XT(X?))
