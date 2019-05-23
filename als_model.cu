@@ -4,6 +4,7 @@
 #include "als_model.h"
 #include "cuda_runtime.h"
 #include "cuda_common.h"
+#include "logger.h"
 
 /*
 auto cuda_malloc_device = [](size_t size) {
@@ -153,6 +154,10 @@ void als_model::train() {
 	//std::unique_ptr<float, decltype(cuda_deleter_device)> thetaT((float*)cuda_malloc_device(f * n * sizeof(float)), cuda_deleter_device);
 	//float *a = thetaT.get();
 
+#ifdef USE_LOGGER
+	g_logger.log("als model training started", true);
+#endif
+
 	unsigned int seed = 0;
 	srand (seed);
 	for (size_t k = 0; k < n * f; k++)
@@ -163,9 +168,23 @@ void als_model::train() {
 	CUDA_CHECK(cudaMemcpy(d_VT, h_VT, n * f * sizeof(h_VT[0]), cudaMemcpyHostToDevice));
 	CUDA_CHECK(cudaMemcpy(d_U, h_U, m * f * sizeof(h_U[0]), cudaMemcpyHostToDevice));
 
+#ifdef USE_LOGGER
+	g_logger.log("factors initialization done", true);
+#endif
+
 	for(size_t it = 0; it < iters; ++it) {
+
+#ifdef USE_LOGGER
+		g_logger.als_iter = it + 1;
+#endif
+
 		// ---------- update U ----------
 		{
+
+#ifdef USE_LOGGER
+			g_logger.log("update U started", true);
+#endif
+
 			float *d_RV;
 
 			// TODO: single array of max(m, n) * f allocated in model constructor
@@ -217,6 +236,10 @@ void als_model::train() {
 
 			CUDA_CHECK(cudaFree(d_RV));
 
+#ifdef USE_LOGGER
+			g_logger.log("RVT via cuSPARSE and cuBLAS done", true);
+#endif
+
 			// void calculate_vvts(float *vvts, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT) {
 			calculate_vvts<<<m, f>>>(
 					d_vvts,
@@ -228,9 +251,14 @@ void als_model::train() {
 					d_VT
 			);
 
-#ifdef DEBUG
+#if defined (DEBUG) || defined(USE_LOGGER)
 			CUDA_CHECK(cudaDeviceSynchronize());
 #endif
+
+#ifdef USE_LOGGER
+			g_logger.log("vvts calculation done", true);
+#endif
+
 			// TODO: single array of max(m, n) allocated in model constructor
 
 			// host array of pointers to each device vvt
@@ -256,8 +284,12 @@ void als_model::train() {
 			// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
 			CUBLAS_CHECK(cublasSgetrfBatched(cublas_handle, f, d_d_vvts_ptrs, f, NULL, d_getrf_infos, m));
 
-#ifdef DEBUG
+#if defined (DEBUG) || defined(USE_LOGGER)
 			CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+
+#ifdef USE_LOGGER
+			g_logger.log("vvts batched LU factorization done", true);
 #endif
 
 			int getrs_info;
@@ -293,8 +325,12 @@ void als_model::train() {
 					m
 			));
 
-#ifdef DEBUG
+#if defined (DEBUG) || defined(USE_LOGGER)
 			CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+
+#ifdef USE_LOGGER
+			g_logger.log("U batched solve done", true);
 #endif
 
 			// write result
@@ -305,9 +341,19 @@ void als_model::train() {
 			CUDA_CHECK(cudaFree(d_getrf_infos));
 			CUDA_CHECK(cudaFreeHost(h_d_RVT_ptrs));
 			CUDA_CHECK(cudaFree(d_d_RVT_ptrs));
-		}
+
+#ifdef USE_LOGGER
+			g_logger.log("update U done", true);
+#endif
+
+		}	// update U block
 		// ---------- update V ----------
 		{
+
+#ifdef USE_LOGGER
+			g_logger.log("update V started", true);
+#endif
+
 			float *d_RTU;
 
 			// TODO: single array of max(m, n) * f allocated in model constructor
@@ -361,6 +407,10 @@ void als_model::train() {
 
 			CUDA_CHECK(cudaFree(d_RTU));
 
+#ifdef USE_LOGGER
+			g_logger.log("d_RTUT via cuSPARSE and cuBLAS done", true);
+#endif
+
 			// Function is named calculate_vvts but here we actually calculate uuts.
 			// Naming is kept for U update for easier debugging
 			// void calculate_vvts(float *vvts, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT) {
@@ -374,8 +424,12 @@ void als_model::train() {
 					d_U
 			);
 
-#ifdef DEBUG
+#if defined (DEBUG) || defined(USE_LOGGER)
 			CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+
+#ifdef USE_LOGGER
+			g_logger.log("uuts calculation done", true);
 #endif
 
 			// TODO: single array of max(m, n) allocated in model constructor
@@ -403,8 +457,12 @@ void als_model::train() {
 			// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
 			CUBLAS_CHECK(cublasSgetrfBatched(cublas_handle, f, d_d_uuts_ptrs, f, NULL, d_getrf_infos, n));
 
-#ifdef DEBUG
+#if defined (DEBUG) || defined(USE_LOGGER)
 			CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+
+#ifdef USE_LOGGER
+			g_logger.log("uuts batched LU factorization done", true);
 #endif
 
 			int getrs_info;
@@ -440,8 +498,12 @@ void als_model::train() {
 					n
 			));
 
-#ifdef DEBUG
+#if defined (DEBUG) || defined(USE_LOGGER)
 			CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+
+#ifdef USE_LOGGER
+			g_logger.log("V batched solve done", true);
 #endif
 
 			// write result
@@ -452,12 +514,25 @@ void als_model::train() {
 			CUDA_CHECK(cudaFree(d_getrf_infos));
 			CUDA_CHECK(cudaFreeHost(h_d_RTUT_ptrs));
 			CUDA_CHECK(cudaFree(d_d_RTUT_ptrs));
-		}
-	}
+
+#ifdef USE_LOGGER
+			g_logger.log("update V done", true);
+#endif
+
+		}	// update V block
+	}	// iters loop
+
+#ifdef USE_LOGGER
+	g_logger.als_iter = 0;
+#endif
 
 	// final result from device to host
 
 	CUDA_CHECK(cudaMemcpy(h_VT, d_VT, m * f, cudaMemcpyDeviceToHost));
 	CUDA_CHECK(cudaMemcpy(h_U, d_U, n * f, cudaMemcpyDeviceToHost));
+
+#ifdef USE_LOGGER
+	g_logger.log("als model training done", true);
+#endif
 }
 
