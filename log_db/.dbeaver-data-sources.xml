@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<data-sources>
+	<data-source id="csvjdbc-16ae5028418-49ec965722e0c569" provider="generic" driver="csvjdbc" name="Flat files - toy_data" save-password="true" read-only="false">
+		<connection server="" database="/home/vladimir/src/cuda_als/log/toy_data" url="jdbc:relique:csv:/home/vladimir/src/cuda_als/log/toy_data" type="dev">
+			<property name="quotechar" value="&quot;"/>
+			<property name="charset" value="UTF-8"/>
+			<property name="fileExtension" value=".csv"/>
+			<property name="separator" value=","/>
+			<property name="suppressHeaders" value="false"/>
+		</connection>
+	</data-source>
+	<data-source id="sqlite_jdbc-16ae505f3ea-2fb14a5202cae4b2" provider="generic" driver="sqlite_jdbc" name="SQLite - log.db" save-password="true" read-only="false">
+		<connection server="" database="/home/vladimir/src/cuda_als/log_db/log.db" url="jdbc:sqlite:/home/vladimir/src/cuda_als/log_db/log.db" type="dev"/>
+	</data-source>
+	<filters/>
+</data-sources>
