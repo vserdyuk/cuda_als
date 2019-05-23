@@ -23,7 +23,7 @@ void logger::init(const std::string &log_folder) {
 
 #ifdef DEBUG
 	log_name += "_debug=true";
-#elif
+#else
 	log_name += "_debug=false";
 #endif
 
