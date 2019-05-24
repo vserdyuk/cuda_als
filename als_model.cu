@@ -507,7 +507,7 @@ void als_model::train() {
 #endif
 
 			// write result
-			CUDA_CHECK(cudaMemcpy(d_UT, d_UTR, n * f * sizeof(d_UTR[0]), cudaMemcpyDeviceToDevice));
+			CUDA_CHECK(cudaMemcpy(d_VT, d_UTR, n * f * sizeof(d_UTR[0]), cudaMemcpyDeviceToDevice));
 
 			CUDA_CHECK(cudaFreeHost(h_d_uuts_ptrs));
 			CUDA_CHECK(cudaFree(d_d_uuts_ptrs));
