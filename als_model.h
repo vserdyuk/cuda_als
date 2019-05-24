@@ -26,14 +26,14 @@ struct als_model {
 
 	float *h_VT;	// host transposed global item factor matrix, n x f (thetaTHost)
 	float *d_VT;	// device transposed global item factor matrix, n x f (thetaT)
-	float *d_RVT;	// device ratings multiplied by transposed global item factor matrix, f x m (ythetaT)
+	float *d_VTRT;	// device transposed global item factor matrix multiplied by transposed ratings, f x m (confusing name ythetaT, IMHO thetaTyT is clearer)
 
-	float *h_U;		// host global user factor matrix, m x f (XTHost(XHost?))
-	float *d_U;		// device global user factor matrix, m x f (XT(X?))
-	float *d_RTUT;	// device transposed ratings multiplied by transposed global user factor matrix f x n (yTXT)
+	float *h_UT;	// host transposed global user factor matrix, m x f (XTHost)
+	float *d_UT;	// device transposed global user factor matrix, m x f (XT)
+	float *d_UTR;	// device transposed global user factor matrix multiplied by ratings, f x n (confusing name yTXT, IMHO XTy is clearer)
 
-	float *d_vvts;	// device multiple vvt factor matrices each for single item, (f x f) * n (tt)
-	float *d_uuts;	// device multiple uut factor matrices each for single user, (f x f) * m (xx)
+	float *d_vvts;	// device multiple vvt regularized factor matrices each for single item, (f x f) * n (tt)
+	float *d_uuts;	// device multiple uut regularized factor matrices each for single user, (f x f) * m (xx)
 
 	cusparseHandle_t cusparse_handle;
 	cublasHandle_t cublas_handle;

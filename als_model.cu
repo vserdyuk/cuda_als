@@ -115,8 +115,8 @@ als_model::als_model(cuda_sparse_matrix &train_ratings, cuda_sparse_matrix &test
 	CUDA_CHECK(cudaMallocHost((void **)&h_VT, n * f * sizeof(h_VT[0])));
 	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_VT, n * f * sizeof(d_VT[0])));
 
-	CUDA_CHECK(cudaMallocHost((void **)&h_U, m * f * sizeof(h_U[0])));
-	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_U, m * f * sizeof(d_U[0])));
+	CUDA_CHECK(cudaMallocHost((void **)&h_UT, m * f * sizeof(h_UT[0])));
+	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_UT, m * f * sizeof(d_UT[0])));
 
 	// на первом этапе без X_BATCH размер f * f * m, затем будет f * f * batch_size
 	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_vvts, f * f * m * sizeof(d_vvts[0])));
@@ -124,13 +124,13 @@ als_model::als_model(cuda_sparse_matrix &train_ratings, cuda_sparse_matrix &test
 	// на первом этапе без THETA_BATCH размер f * f * n, затем будет f * f * batch_size
 	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_uuts, f * f * n * sizeof(d_uuts[0])));
 
-	// float *d_RVT;	// device ratings multiplied by transposed global item factor matrix, f x m (ythetaT)
+	// float *d_VTRT;	// device transposed global item factor matrix multiplied by transposed ratings, f x m (confusing name ythetaT, IMHO thetaTyT is clearer)
 
-	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_RVT, f * m * sizeof(d_RVT[0])));
+	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_VTRT, f * m * sizeof(d_VTRT[0])));
 
-	// float *d_RTUT;	// device transposed ratings multiplied by transposed global user factor matrix f x n (yTXT)
+	// float *d_UTR;	// device transposed global user factor matrix multiplied by ratings, f x n (confusing name yTXT, IMHO XTy is clearer)
 
-	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_RTUT, f * n * sizeof(d_RTUT[0])));
+	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_UTR, f * n * sizeof(d_UTR[0])));
 
 	CUSPARSE_CHECK(cusparseCreate(&cusparse_handle));
 	CUBLAS_CHECK(cublasCreate_v2(&cublas_handle));
@@ -140,8 +140,8 @@ als_model::~als_model() {
 	CUDA_CHECK(cudaFreeHost(h_VT));
 	CUDA_CHECK(cudaFree(d_VT));
 
-	CUDA_CHECK(cudaFreeHost(h_U));
-	CUDA_CHECK(cudaFree(d_U));
+	CUDA_CHECK(cudaFreeHost(h_UT));
+	CUDA_CHECK(cudaFree(d_UT));
 
 	CUDA_CHECK(cudaFree(d_vvts));
 	CUDA_CHECK(cudaFree(d_uuts));
@@ -151,8 +151,6 @@ als_model::~als_model() {
 }
 
 void als_model::train() {
-	//std::unique_ptr<float, decltype(cuda_deleter_device)> thetaT((float*)cuda_malloc_device(f * n * sizeof(float)), cuda_deleter_device);
-	//float *a = thetaT.get();
 
 #ifdef USE_LOGGER
 	g_logger.log("als model training started", true);
@@ -163,10 +161,10 @@ void als_model::train() {
 	for (size_t k = 0; k < n * f; k++)
 		h_VT[k] = 0.2*((float)rand() / (float)RAND_MAX);
 	for (size_t k = 0; k < m * f; k++)
-		h_U[k] = 0;//0.1*((float) rand() / (float)RAND_MAX);
+		h_UT[k] = 0;//0.1*((float) rand() / (float)RAND_MAX);
 
 	CUDA_CHECK(cudaMemcpy(d_VT, h_VT, n * f * sizeof(h_VT[0]), cudaMemcpyHostToDevice));
-	CUDA_CHECK(cudaMemcpy(d_U, h_U, m * f * sizeof(h_U[0]), cudaMemcpyHostToDevice));
+	CUDA_CHECK(cudaMemcpy(d_UT, h_UT, m * f * sizeof(h_UT[0]), cudaMemcpyHostToDevice));
 
 #ifdef USE_LOGGER
 	g_logger.log("factors initialization done", true);
@@ -185,6 +183,7 @@ void als_model::train() {
 			g_logger.log("update U started", true);
 #endif
 
+			// device ratings multiplied by global item factor matrix, m x f (ytheta)
 			float *d_RV;
 
 			// TODO: single array of max(m, n) * f allocated in model constructor
@@ -216,7 +215,7 @@ void als_model::train() {
 					m
 			));
 
-			// RV.T = RVT
+			// (RV).T = VTRT
 
 			CUBLAS_CHECK(cublasSgeam(
 					cublas_handle,
@@ -228,16 +227,16 @@ void als_model::train() {
 					d_RV,
 					m,
 					&beta,
-					d_RVT,
+					d_VTRT,
 					f,
-					d_RVT,
+					d_VTRT,
 					f
 			));
 
 			CUDA_CHECK(cudaFree(d_RV));
 
 #ifdef USE_LOGGER
-			g_logger.log("RVT via cuSPARSE and cuBLAS done", true);
+			g_logger.log("VTRT via cuSPARSE and cuBLAS done", true);
 #endif
 
 			// void calculate_vvts(float *vvts, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT) {
@@ -294,22 +293,22 @@ void als_model::train() {
 
 			int getrs_info;
 
-			// host array of pointers to each device RVT column
-			float **h_d_RVT_ptrs;
+			// host array of pointers to each device VTRT column
+			float **h_d_VTRT_ptrs;
 
-			CUDA_CHECK(cudaMallocHost((void **)&h_d_RVT_ptrs, m * sizeof(h_d_RVT_ptrs[0])));
+			CUDA_CHECK(cudaMallocHost((void **)&h_d_VTRT_ptrs, m * sizeof(h_d_VTRT_ptrs[0])));
 
 			for(size_t i = 0; i < m; ++i) {
-				h_d_RVT_ptrs[i] = &d_RVT[i * f];
+				h_d_VTRT_ptrs[i] = &d_VTRT[i * f];
 			}
 
-			// device array of pointers to each device RVT column
-			float **d_d_RVT_ptrs;
+			// device array of pointers to each device VTRT column
+			float **d_d_VTRT_ptrs;
 
-			CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_RVT_ptrs, m * sizeof(d_d_vvts_ptrs[0])));
-			CUDA_CHECK(cudaMemcpy(d_d_RVT_ptrs, h_d_RVT_ptrs, m * sizeof(h_d_RVT_ptrs[0]), cudaMemcpyHostToDevice));
+			CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_VTRT_ptrs, m * sizeof(d_d_VTRT_ptrs[0])));
+			CUDA_CHECK(cudaMemcpy(d_d_VTRT_ptrs, h_d_VTRT_ptrs, m * sizeof(h_d_VTRT_ptrs[0]), cudaMemcpyHostToDevice));
 
-			// d_RVT gets overwritten by result
+			// d_VTRT gets overwritten by result (VT)
 			// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
 			CUBLAS_CHECK(cublasSgetrsBatched(
 					cublas_handle,
@@ -319,7 +318,7 @@ void als_model::train() {
 					(const float * const *)d_d_vvts_ptrs,
 					f,
 					nullptr,
-					(float * const *)d_d_RVT_ptrs,
+					(float * const *)d_d_VTRT_ptrs,
 					f,
 					&getrs_info,
 					m
@@ -334,13 +333,13 @@ void als_model::train() {
 #endif
 
 			// write result
-			CUDA_CHECK(cudaMemcpy(d_U, d_RVT, m * f * sizeof(d_RVT[0]), cudaMemcpyDeviceToDevice));
+			CUDA_CHECK(cudaMemcpy(d_UT, d_VTRT, m * f * sizeof(d_VTRT[0]), cudaMemcpyDeviceToDevice));
 
 			CUDA_CHECK(cudaFreeHost(h_d_vvts_ptrs));
 			CUDA_CHECK(cudaFree(d_d_vvts_ptrs));
 			CUDA_CHECK(cudaFree(d_getrf_infos));
-			CUDA_CHECK(cudaFreeHost(h_d_RVT_ptrs));
-			CUDA_CHECK(cudaFree(d_d_RVT_ptrs));
+			CUDA_CHECK(cudaFreeHost(h_d_VTRT_ptrs));
+			CUDA_CHECK(cudaFree(d_d_VTRT_ptrs));
 
 #ifdef USE_LOGGER
 			g_logger.log("update U done", true);
@@ -354,6 +353,7 @@ void als_model::train() {
 			g_logger.log("update V started", true);
 #endif
 
+			// device transposed ratings multiplied by global user factor matrix, m x f (yTX)
 			float *d_RTU;
 
 			// TODO: single array of max(m, n) * f allocated in model constructor
@@ -363,7 +363,7 @@ void als_model::train() {
 			const float alpha = 1.0f;
 			const float beta = 0.0f;
 
-			// RT * U = RTU
+			// RT * UT.T = RTU
 
 			// https://docs.nvidia.com/cuda/cusparse/index.html#csc-format
 			// Note: The matrix A in CSR format has exactly the same memory layout as its transpose in CSC format (and vice versa).
@@ -380,14 +380,14 @@ void als_model::train() {
 					train_ratings.d_csc_vals,
 					train_ratings.d_csc_col_ptrs,
 					train_ratings.d_csc_row_idxs,
-					d_U,
+					d_UT,
 					f,
 					&beta,
 					d_RTU,
 					n
 			));
 
-			// RTU.T = RTUT
+			// (RTU).T = UTR
 
 			CUBLAS_CHECK(cublasSgeam(
 					cublas_handle,
@@ -399,16 +399,16 @@ void als_model::train() {
 					d_RTU,
 					n,
 					&beta,
-					d_RTUT,
+					d_UTR,
 					f,
-					d_RTUT,
+					d_UTR,
 					f
 			));
 
 			CUDA_CHECK(cudaFree(d_RTU));
 
 #ifdef USE_LOGGER
-			g_logger.log("d_RTUT via cuSPARSE and cuBLAS done", true);
+			g_logger.log("d_UTR via cuSPARSE and cuBLAS done", true);
 #endif
 
 			// Function is named calculate_vvts but here we actually calculate uuts.
@@ -421,7 +421,7 @@ void als_model::train() {
 					lambda,
 					n,
 					f,
-					d_U
+					d_UT
 			);
 
 #if defined (DEBUG) || defined(USE_LOGGER)
@@ -467,22 +467,22 @@ void als_model::train() {
 
 			int getrs_info;
 
-			// host array of pointers to each device RTUT column
-			float **h_d_RTUT_ptrs;
+			// host array of pointers to each device UTR column
+			float **h_d_UTR_ptrs;
 
-			CUDA_CHECK(cudaMallocHost((void **)&h_d_RTUT_ptrs, n * sizeof(h_d_RTUT_ptrs[0])));
+			CUDA_CHECK(cudaMallocHost((void **)&h_d_UTR_ptrs, n * sizeof(h_d_UTR_ptrs[0])));
 
 			for(size_t i = 0; i < n; ++i) {
-				h_d_RTUT_ptrs[i] = &d_RTUT[i * f];
+				h_d_UTR_ptrs[i] = &d_UTR[i * f];
 			}
 
-			// device array of pointers to each device RTUT column
-			float **d_d_RTUT_ptrs;
+			// device array of pointers to each device UTR column
+			float **d_d_UTR_ptrs;
 
-			CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_RTUT_ptrs, n * sizeof(d_d_uuts_ptrs[0])));
-			CUDA_CHECK(cudaMemcpy(d_d_RTUT_ptrs, h_d_RTUT_ptrs, n * sizeof(h_d_RTUT_ptrs[0]), cudaMemcpyHostToDevice));
+			CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_UTR_ptrs, n * sizeof(d_d_uuts_ptrs[0])));
+			CUDA_CHECK(cudaMemcpy(d_d_UTR_ptrs, h_d_UTR_ptrs, n * sizeof(h_d_UTR_ptrs[0]), cudaMemcpyHostToDevice));
 
-			// d_RTUT gets overwritten by result
+			// d_UTR gets overwritten by result (UT)
 			// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
 			CUBLAS_CHECK(cublasSgetrsBatched(
 					cublas_handle,
@@ -492,7 +492,7 @@ void als_model::train() {
 					(const float * const *)d_d_uuts_ptrs,
 					f,
 					nullptr,
-					(float * const *)d_d_RTUT_ptrs,
+					(float * const *)d_d_UTR_ptrs,
 					f,
 					&getrs_info,
 					n
@@ -507,13 +507,13 @@ void als_model::train() {
 #endif
 
 			// write result
-			CUDA_CHECK(cudaMemcpy(d_U, d_RTUT, n * f * sizeof(d_RTUT[0]), cudaMemcpyDeviceToDevice));
+			CUDA_CHECK(cudaMemcpy(d_UT, d_UTR, n * f * sizeof(d_UTR[0]), cudaMemcpyDeviceToDevice));
 
 			CUDA_CHECK(cudaFreeHost(h_d_uuts_ptrs));
 			CUDA_CHECK(cudaFree(d_d_uuts_ptrs));
 			CUDA_CHECK(cudaFree(d_getrf_infos));
-			CUDA_CHECK(cudaFreeHost(h_d_RTUT_ptrs));
-			CUDA_CHECK(cudaFree(d_d_RTUT_ptrs));
+			CUDA_CHECK(cudaFreeHost(h_d_UTR_ptrs));
+			CUDA_CHECK(cudaFree(d_d_UTR_ptrs));
 
 #ifdef USE_LOGGER
 			g_logger.log("update V done", true);
@@ -529,7 +529,7 @@ void als_model::train() {
 	// final result from device to host
 
 	CUDA_CHECK(cudaMemcpy(h_VT, d_VT, m * f, cudaMemcpyDeviceToHost));
-	CUDA_CHECK(cudaMemcpy(h_U, d_U, n * f, cudaMemcpyDeviceToHost));
+	CUDA_CHECK(cudaMemcpy(h_UT, d_UT, n * f, cudaMemcpyDeviceToHost));
 
 #ifdef USE_LOGGER
 	g_logger.log("als model training done", true);
