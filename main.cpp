@@ -35,6 +35,15 @@ int main(int argc, char **argv) {
 	g_logger.init(log_folder);
 #endif
 
+	std::stringstream ss;
+
+	ss << "m=" << m << " n=" << n << " f=" << f << " nnz_train=" << nnz_train << " nnz_test=" << nnz_test
+				<< " lambda=" << lambda << " als_iters=" << als_iters << " data_folder=" << data_folder
+				<< " als_runs=" << als_runs << " log_folder=" << log_folder
+	;
+
+	g_logger.log(ss.str(), true);
+
 	cudaSetDevice(CUDA_DEVICE_ID);
 
 	cuda_sparse_matrix train_ratings(m, n, nnz_train);

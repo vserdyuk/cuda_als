@@ -32,8 +32,8 @@ struct als_model {
 	float *d_UT;	// device transposed global user factor matrix, m x f (XT)
 	float *d_UTR;	// device transposed global user factor matrix multiplied by ratings, f x n (confusing name yTXT, IMHO XTy is clearer)
 
-	float *d_vvts;	// device multiple vvt regularized factor matrices each for single item, (f x f) * n (tt)
-	float *d_uuts;	// device multiple uut regularized factor matrices each for single user, (f x f) * m (xx)
+	float *d_vtvs;	// device multiple vvt regularized factor matrices each for single item, (f x f) * n (tt)
+	float *d_utus;	// device multiple uut regularized factor matrices each for single user, (f x f) * m (xx)
 
 	cusparseHandle_t cusparse_handle;
 	cublasHandle_t cublas_handle;
