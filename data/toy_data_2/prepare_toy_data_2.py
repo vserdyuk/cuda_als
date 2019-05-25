@@ -64,8 +64,8 @@ def maybe_download(filename, expected_bytes):
 1::362::5::838984885
 1::364::5::838983707
 '''
-m = 15
-n = 13
+m = 32
+n = 23
 
 
 # In[5]:
@@ -94,11 +94,11 @@ user_item = np.vstack((user, item))
 
 # In[7]:
 
-user_item_train, user_item_test, rating_train, rating_test = train_test_split(user_item.T, rating, test_size=10, random_state=42)
+user_item_train, user_item_test, rating_train, rating_test = train_test_split(user_item.T, rating, test_size=20, random_state=42)
 
 
-nnz_train = 36
-nnz_test = 10
+nnz_train = 82
+nnz_test = 20
 
 
 # In[8]:
@@ -192,6 +192,13 @@ np.min(R_test_coo.col)
 #for training data, we need COO format to calculate training RMSE
 #we need CSR format R when calculate X from \Theta
 #we need CSC format of R when calculating \Theta from X
+
+print("R_train_coo.nnz")
+print(R_train_coo.nnz)
+
+print("nnz_train")
+print(nnz_train)
+
 assert R_train_coo.nnz == nnz_train
 R_train_coo.row.tofile('R_train_coo.row.bin')
 
