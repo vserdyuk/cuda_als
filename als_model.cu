@@ -6,31 +6,8 @@
 #include "cuda_common.h"
 #include "logger.h"
 
-/*
-auto cuda_malloc_device = [](size_t size) {
-	void *ptr;
-	CUDA_CHECK(CUDA_MALLOC_DEVICE(&ptr, size));
-	return ptr;
-};
-
-auto cuda_deleter_device = [](void *ptr) {
-	CUDA_CHECK(cudaFree(ptr));
-};
-*/
-
 __global__
 void calculate_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT) {
-	// start = current row pointer
-	// end = next row pointer
-	// nr_of_cols = end - start
-	// thread_col = threadIdx.x
-	// for i = 0 to f (from up to down)
-	//     for j = 0 to nr_of_cols
-	//         curr_col_in_global = csr_col_idxs[start + j]
-	//         tmp += VT[curr_col_in_global * f + i] * VT[curr_col_in_global * f + i]
-	//     vtvs[blockIdx.x * f * f + i] = tmp
-	//
-
 	// left matrix is vt (i.e. columns from VT for items rated by current user)
 	// top matrix is v (i.e. vt transposed)
 
@@ -107,8 +84,264 @@ void calculate_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lam
 	}
 }
 
-als_model::als_model(cuda_sparse_matrix &train_ratings, cuda_sparse_matrix &test_ratings, int f, float lambda, int iters):
-		train_ratings(train_ratings), test_ratings(test_ratings), f(f), lambda(lambda), iters(iters) {
+__global__
+void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
+	extern __shared__ float smem [];
+
+	if(threadIdx.x < f) {
+		int user_idx = blockIdx.x;
+
+		int start = csr_row_ptrs[user_idx];
+		int end = csr_row_ptrs[user_idx + 1];
+
+		int items_cnt = end - start;
+
+		int smem_iters = (items_cnt - 1) / smem_col_cnt + 1;
+
+
+		int top_col = threadIdx.x;
+		int out_col = top_col;
+
+		for(int smem_iter = 0; smem_iter < smem_iters; ++smem_iter) {
+			int smem_items = smem_col_cnt * (smem_iter + 1) < items_cnt ? smem_col_cnt : items_cnt - smem_col_cnt * smem_iter;
+
+			// Each thread reads smem_col_cnt columns - all threads are busy
+			for(int smem_col = 0; smem_col < smem_items; ++smem_col) {
+				smem[f * smem_col + threadIdx.x] = VT[f * csr_col_idxs[start + smem_iter * smem_col_cnt + smem_col] + threadIdx.x];
+			}
+
+			__syncthreads();
+
+			// actual work
+
+			int left_row = 0;
+			int out_row = left_row;
+
+			while(left_row < f) {
+				float out = 0;
+
+				for(int item_nr = 0; item_nr < smem_items; ++item_nr) {
+					// VT is column-major:
+					//     for left matrix, move to next row <=> add 1 to idx
+					//     for left matrix, move to next col <=> add f to idx
+					//     for top matrix, move to next row <=> add f to idx
+					//     for top matrix, move to next col <=> add 1 to idx
+
+					int left_col = item_nr;
+					int top_row = left_col;
+
+					int left_row_offset = left_row;
+					int left_col_offset = left_col * f;
+
+					int top_row_offset = top_row * f;
+					int top_col_offset = top_col;
+
+					out += smem[left_row_offset + left_col_offset] * smem[top_row_offset + top_col_offset];
+				}
+
+				vtvs[user_idx * f * f + out_row + out_col * f] += out;
+
+				++left_row;
+				++out_row;
+			}
+		}
+
+		// regularization
+		vtvs[user_idx * f * f + out_col + out_col * f] += items_cnt * lambda;
+	}
+}
+
+__global__
+void calculate_vtvs_smem_row_major_no_calc(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
+	extern __shared__ float smem [];
+
+	if(threadIdx.x < f) {
+		int user_idx = blockIdx.x;
+
+		int start = csr_row_ptrs[user_idx];
+		int end = csr_row_ptrs[user_idx + 1];
+
+		int items_cnt = end - start;
+
+		int smem_iters = (items_cnt - 1) / smem_col_cnt + 1;
+
+
+		int top_col = threadIdx.x;
+		int out_col = top_col;
+
+		for(int smem_iter = 0; smem_iter < smem_iters; ++smem_iter) {
+			int smem_items = smem_col_cnt * (smem_iter + 1) < items_cnt ? smem_col_cnt : items_cnt - smem_col_cnt * smem_iter;
+
+			// Each thread reads smem_col_cnt columns - all threads are busy
+			for(int smem_col = 0; smem_col < smem_items; ++smem_col) {
+				smem[f * smem_col + threadIdx.x] = VT[f * csr_col_idxs[start + smem_iter * smem_col_cnt + smem_col] + threadIdx.x];
+			}
+
+			__syncthreads();
+
+			// no actual work - just measuring smem loading time
+		}
+	}
+}
+
+__global__
+void calculate_vtvs_smem_col_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
+	extern __shared__ float smem [];
+
+	if(threadIdx.x < f) {
+		int user_idx = blockIdx.x;
+
+		int start = csr_row_ptrs[user_idx];
+		int end = csr_row_ptrs[user_idx + 1];
+
+		int items_cnt = end - start;
+
+		int smem_iters = (items_cnt - 1) / smem_col_cnt + 1;
+
+
+		int top_col = threadIdx.x;
+		int out_col = top_col;
+
+		for(int smem_iter = 0; smem_iter < smem_iters; ++smem_iter) {
+			int smem_items = smem_col_cnt * (smem_iter + 1) < items_cnt ? smem_col_cnt : items_cnt - smem_col_cnt * smem_iter;
+
+			// First smem_items threads read one column each, other threads are busy
+			// Should be enough threads to read smem_items columns
+			if(threadIdx.x < smem_items) {
+				int global_col = csr_col_idxs[start + smem_iter * smem_col_cnt + threadIdx.x];
+				for(int row = 0; row < f; ++row) {
+					smem[f * threadIdx.x + row] = VT[f * global_col + row];
+				}
+			}
+
+			__syncthreads();
+
+			// actual work
+
+			int left_row = 0;
+			int out_row = left_row;
+
+			while(left_row < f) {
+				float out = 0;
+
+				for(int item_nr = 0; item_nr < smem_items; ++item_nr) {
+					// VT is column-major:
+					//     for left matrix, move to next row <=> add 1 to idx
+					//     for left matrix, move to next col <=> add f to idx
+					//     for top matrix, move to next row <=> add f to idx
+					//     for top matrix, move to next col <=> add 1 to idx
+
+					int left_col = item_nr;
+					int top_row = left_col;
+
+					int left_row_offset = left_row;
+					int left_col_offset = left_col * f;
+
+					int top_row_offset = top_row * f;
+					int top_col_offset = top_col;
+
+					out += smem[left_row_offset + left_col_offset] * smem[top_row_offset + top_col_offset];
+				}
+
+				vtvs[user_idx * f * f + out_row + out_col * f] += out;
+
+				++left_row;
+				++out_row;
+			}
+		}
+
+		// regularization
+		vtvs[user_idx * f * f + out_col + out_col * f] += items_cnt * lambda;
+	}
+}
+
+__global__
+void calculate_vtvs_smem_col_major_two_threads(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
+	extern __shared__ float smem [];
+
+	if(threadIdx.x < f) {
+		int user_idx = blockIdx.x;
+
+		int start = csr_row_ptrs[user_idx];
+		int end = csr_row_ptrs[user_idx + 1];
+
+		int items_cnt = end - start;
+
+		int smem_iters = (items_cnt - 1) / smem_col_cnt + 1;
+
+
+		int top_col = threadIdx.x;
+		int out_col = top_col;
+
+		for(int smem_iter = 0; smem_iter < smem_iters; ++smem_iter) {
+
+			int smem_items = smem_col_cnt * (smem_iter + 1) < items_cnt ? smem_col_cnt : items_cnt - smem_col_cnt * smem_iter;
+
+			// First smem_items * 2 threads read one half column each, other threads are busy.
+			// Should be enough threads to read smem_items columns
+			if(threadIdx.x < smem_items * 2) {
+				int global_col = csr_col_idxs[start + smem_iter * smem_col_cnt + threadIdx.x];
+				int first_row = f / 2 * threadIdx.x % 2;
+				for(int row = first_row; row < f / 2; ++row) {
+					smem[f * threadIdx.x / 2 + row] = VT[f * global_col + row];
+				}
+			}
+
+			__syncthreads();
+
+			// actual work
+
+			int left_row = 0;
+			int out_row = left_row;
+
+			while(left_row < f) {
+				float out = 0;
+
+				for(int item_nr = 0; item_nr < smem_items; ++item_nr) {
+					// VT is column-major:
+					//     for left matrix, move to next row <=> add 1 to idx
+					//     for left matrix, move to next col <=> add f to idx
+					//     for top matrix, move to next row <=> add f to idx
+					//     for top matrix, move to next col <=> add 1 to idx
+
+					int left_col = item_nr;
+					int top_row = left_col;
+
+					int left_row_offset = left_row;
+					int left_col_offset = left_col * f;
+
+					int top_row_offset = top_row * f;
+					int top_col_offset = top_col;
+
+					out += smem[left_row_offset + left_col_offset] * smem[top_row_offset + top_col_offset];
+				}
+
+				vtvs[user_idx * f * f + out_row + out_col * f] += out;	// how bad is += for performance?
+
+				++left_row;
+				++out_row;
+			}
+		}
+
+		// regularization
+		vtvs[user_idx * f * f + out_col + out_col * f] += items_cnt * lambda;
+	}
+}
+
+std::string als_model::to_string(CALCULATE_VVTS_TYPE calculate_vvts_type) {
+	switch(calculate_vvts_type) {
+		case CALCULATE_VVTS_TYPE::SIMPLE: return "SIMPLE";
+		case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR: return "SMEM_ROW_MAJOR";
+		case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR: return "SMEM_COL_MAJOR";
+		case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_NO_CALC: return "SMEM_ROW_MAJOR_NO_CALC";
+		case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS: return "SMEM_COL_MAJOR_TWO_THREADS";
+		default: return "UNKNOWN";
+	}
+}
+
+als_model::als_model(cuda_sparse_matrix &train_ratings, cuda_sparse_matrix &test_ratings, int f, float lambda, int iters, CALCULATE_VVTS_TYPE calculate_vvts_type, int smem_col_cnt):
+		train_ratings(train_ratings), test_ratings(test_ratings), f(f), lambda(lambda), iters(iters), calculate_vvts_type(calculate_vvts_type),
+		smem_col_cnt(smem_col_cnt) {
 	m = train_ratings.row_cnt;
 	n = train_ratings.col_cnt;
 
@@ -240,26 +473,70 @@ void als_model::train() {
 #endif
 
 #ifdef USE_LOGGER
-			g_logger.log("vtvs calculation started", true);
+			g_logger.log("vtvs calculation started type=" + to_string(calculate_vvts_type), true);
 #endif
 
-			// void calculate_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT) {
-			calculate_vtvs<<<m, f>>>(
-					d_vtvs,
-					train_ratings.d_csr_row_ptrs,
-					train_ratings.d_csr_coo_col_idxs,
-					lambda,
-					m,
-					f,
-					d_VT
-			);
+			int smem_size = 0;
+
+			switch (calculate_vvts_type) {
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR:
+			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR:
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_NO_CALC:
+			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
+				smem_size = smem_col_cnt * f * sizeof(d_VT[0]);
+				g_logger.log("vtvs smem_col_cnt=" + std::to_string(smem_col_cnt) + " smem_size=" + std::to_string(smem_size), true);
+			}
+
+			switch (calculate_vvts_type) {
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR:
+				// void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
+				calculate_vtvs_smem_row_major<<<m, f, smem_size>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
+						train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT, smem_col_cnt
+				);
+				break;
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_NO_CALC:
+				// void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
+				calculate_vtvs_smem_row_major_no_calc<<<m, f, smem_size>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
+						train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT, smem_col_cnt
+				);
+				break;
+			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR:
+				if(f < smem_col_cnt) {
+					throw std::runtime_error("SMEM_COL_MAJOR: f(" + std::to_string(f) + ") should be greater than or equal to smem_col_cnt("
+							+ std::to_string(smem_col_cnt) + ")"
+					);
+				}
+				// void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
+				calculate_vtvs_smem_col_major<<<m, f, smem_size>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
+						train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT, smem_col_cnt
+				);
+				break;
+			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
+				if(f < smem_col_cnt * 2) {
+					throw std::runtime_error("SMEM_COL_MAJOR_TWO_THREADS: f(" + std::to_string(f) + ") should be greater than or equal to smem_col_cnt * 2 ("
+							+ std::to_string(smem_col_cnt) + " * 2 = " + std::to_string(smem_col_cnt * 2) + ")"
+					);
+				}
+				// void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
+				calculate_vtvs_smem_col_major_two_threads<<<m, f, smem_size>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
+						train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT, smem_col_cnt
+				);
+				break;
+			case CALCULATE_VVTS_TYPE::SIMPLE:
+			default:
+				// void calculate_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT) {
+				calculate_vtvs<<<m, f>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
+						train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT
+				);
+			}
+			CUDA_CHECK(cudaPeekAtLastError());
 
 #if defined (DEBUG) || defined(USE_LOGGER)
 			CUDA_CHECK(cudaDeviceSynchronize());
 #endif
 
 #ifdef USE_LOGGER
-			g_logger.log("vtvs calculation done", true);
+			g_logger.log("vtvs calculation done type=" + to_string(calculate_vvts_type), true);
 #endif
 
 			// TODO: single array of max(m, n) allocated in model constructor
@@ -416,21 +693,67 @@ void als_model::train() {
 #endif
 
 #ifdef USE_LOGGER
-			g_logger.log("utus calculation started", true);
+			g_logger.log("utus calculation started type=" + to_string(calculate_vvts_type), true);
 #endif
 
 			// Function is named calculate_vtvs but here we actually calculate utus.
 			// Naming is kept for U update for easier debugging
-			// void calculate_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT) {
-			calculate_vtvs<<<n, f>>>(
-					d_utus,
-					train_ratings.d_csc_col_ptrs,
-					train_ratings.d_csc_row_idxs,
-					lambda,
-					n,
-					f,
-					d_UT
-			);
+
+			int smem_size = 0;
+
+			switch (calculate_vvts_type) {
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR:
+			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR:
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_NO_CALC:
+			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
+				smem_size = smem_col_cnt * f * sizeof(d_UT[0]);
+				g_logger.log("utus smem_col_cnt=" + std::to_string(smem_col_cnt) + " smem_size=" + std::to_string(smem_size), true);
+			}
+
+			switch (calculate_vvts_type) {
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR:
+				// void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
+				calculate_vtvs_smem_row_major<<<n, f, smem_size>>>(d_utus, train_ratings.d_csc_col_ptrs,
+						train_ratings.d_csc_row_idxs, lambda, n, f, d_UT, smem_col_cnt
+				);
+				break;
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_NO_CALC:
+				// void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
+				calculate_vtvs_smem_row_major_no_calc<<<n, f, smem_size>>>(d_utus, train_ratings.d_csc_col_ptrs,
+						train_ratings.d_csc_row_idxs, lambda, n, f, d_UT, smem_col_cnt
+				);
+				break;
+			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR:
+				if(f < smem_col_cnt) {
+					throw std::runtime_error("SMEM_COL_MAJOR: f(" + std::to_string(f) + ") should be greater than or equal to smem_col_cnt("
+							+ std::to_string(smem_col_cnt) + ")"
+					);
+				}
+				// void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
+				calculate_vtvs_smem_col_major<<<n, f, smem_size>>>(d_utus, train_ratings.d_csc_col_ptrs,
+						train_ratings.d_csc_row_idxs, lambda, n, f, d_UT, smem_col_cnt
+				);
+				break;
+			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
+				if(f < smem_col_cnt * 2) {
+					throw std::runtime_error("SMEM_COL_MAJOR_TWO_THREADS: f(" + std::to_string(f) + ") should be greater than or equal to smem_col_cnt * 2 ("
+							+ std::to_string(smem_col_cnt) + " * 2 = " + std::to_string(smem_col_cnt * 2) + ")"
+					);
+				}
+				// void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
+				calculate_vtvs_smem_col_major_two_threads<<<n, f, smem_size>>>(d_utus, train_ratings.d_csc_col_ptrs,
+						train_ratings.d_csc_row_idxs, lambda, n, f, d_UT, smem_col_cnt
+				);
+				break;
+			case CALCULATE_VVTS_TYPE::SIMPLE:
+			default:
+				// void calculate_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT) {
+				calculate_vtvs<<<n, f>>>(d_utus, train_ratings.d_csc_col_ptrs,
+						train_ratings.d_csc_row_idxs, lambda, n, f, d_UT
+				);
+			}
+
+			CUDA_CHECK(cudaPeekAtLastError());
 
 #if defined (DEBUG) || defined(USE_LOGGER)
 			CUDA_CHECK(cudaDeviceSynchronize());
@@ -470,7 +793,7 @@ void als_model::train() {
 #endif
 
 #ifdef USE_LOGGER
-			g_logger.log("utus batched LU factorization done", true);
+			g_logger.log("utus batched LU factorization done type=" + to_string(calculate_vvts_type), true);
 #endif
 
 			int getrs_info;

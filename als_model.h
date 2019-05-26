@@ -1,13 +1,23 @@
 #ifndef ALS_MODEL_H
 #define ALS_MODEL_H
 
+#include <string>
+
 #include <cusparse.h>
 #include <cublas_v2.h>
 
 #include "cuda_sparse_matrix.h"
 
 struct als_model {
-	als_model(cuda_sparse_matrix &train_ratings, cuda_sparse_matrix &test_ratings, int f, float lambda, int iters);
+	enum class CALCULATE_VVTS_TYPE {
+		SIMPLE = 0,
+		SMEM_ROW_MAJOR,
+		SMEM_COL_MAJOR,
+		SMEM_ROW_MAJOR_NO_CALC,
+		SMEM_COL_MAJOR_TWO_THREADS
+	};
+
+	als_model(cuda_sparse_matrix &train_ratings, cuda_sparse_matrix &test_ratings, int f, float lambda, int iters, CALCULATE_VVTS_TYPE calculate_vvts_type, int smem_col_cnt);
 	~als_model();
 
 	void train();
@@ -37,6 +47,12 @@ struct als_model {
 
 	cusparseHandle_t cusparse_handle;
 	cublasHandle_t cublas_handle;
+
+	CALCULATE_VVTS_TYPE calculate_vvts_type;
+
+	int smem_col_cnt;
+
+	static std::string to_string(CALCULATE_VVTS_TYPE calculate_vvts_type);
 };
 
 #endif // ALS_MODEL_H
