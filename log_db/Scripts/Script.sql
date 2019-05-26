@@ -1,38 +1,99 @@
 SELECT DISTINCT
 	log_name
-FROM log;
+FROM ml10M_log;
 
+CREATE TABLE ml10M_log AS SELECT * FROM toy_data_log WHERE 1 = 2; 
 
-WITH u_started AS (
+WITH started AS (
 	SELECT
 		log_name,
 		run_iter,
 		als_iter,
-		curr_ts
-	FROM log
-	WHERE text LIKE "update U started"
+		curr_ts,
+		CASE WHEN text LIKE "update U started" THEN "U" ELSE "V" END AS factor,
+		text
+	FROM ml10M_log
+	WHERE 
+		text LIKE "update U started"
+		OR text LIKE "update V started"
 ),
-u_done AS (
+done AS (
 	SELECT
 		log_name,
 		run_iter,
 		als_iter,
-		curr_ts
-	FROM log
-	WHERE text LIKE "update U done"
+		curr_ts,
+		CASE WHEN text LIKE "update U done" THEN "U" ELSE "V" END AS factor
+	FROM ml10M_log
+	WHERE 
+		text LIKE "update U done"
+		OR text LIKE "update V done"
+),
+smem_config AS (
+	SELECT
+		log_name,
+		run_iter,
+		als_iter,
+		CASE WHEN text LIKE "vtvs smem%" THEN "U" ELSE "V" END AS factor,
+		text as smem_config
+	FROM ml10M_log
+	WHERE
+		text LIKE "vtvs smem%"
+		OR text LIKE "utus smem%"
+),
+elapsed as (
+SELECT
+	started.log_name,
+	started.run_iter,
+	started.als_iter,
+	started.factor,
+	started.curr_ts AS start_ts,
+	done.curr_ts AS done_ts,
+	done.curr_ts - started.curr_ts AS elapsed
+FROM
+	started
+	LEFT JOIN done
+		ON started.log_name = done.log_name
+		AND started.run_iter = done.run_iter
+		AND started.als_iter = done.als_iter
+		AND started.factor = done.factor
+), 
+avg_elapsed AS ( 
+SELECT
+	log_name,
+	factor,
+	AVG(elapsed) as avg_elapsed
+FROM elapsed
+GROUP BY
+	log_name,
+	factor
 )
 SELECT
-	u_started.log_name,
-	u_started.run_iter,
-	u_started.als_iter,
-	u_started.curr_ts AS start_ts,
-	u_done.curr_ts AS done_ts,
-	u_done.curr_ts - u_started.curr_ts AS elapsed
+	avg_elapsed.log_name,
+	avg_elapsed.factor,
+	avg_elapsed.avg_elapsed,
+	smem_config_distinct.smem_config,
+	main_params.text
 FROM
-	u_started
-	LEFT JOIN u_done
-		ON u_started.log_name = u_done.log_name
-		AND u_started.run_iter = u_done.run_iter
-		AND u_started.als_iter = u_done.als_iter
+	avg_elapsed
+	LEFT JOIN 
+	(
+		SELECT
+			log_name,
+			text
+		FROM ml10M_log
+		WHERE id = 1
+	) AS main_params
+		ON avg_elapsed.log_name = main_params.log_name
+	LEFT JOIN (
+		SELECT DISTINCT
+			log_name,
+			factor,
+			smem_config
+		FROM smem_config
+	) AS smem_config_distinct
+		ON avg_elapsed.log_name = smem_config_distinct.log_name
+		AND avg_elapsed.factor = smem_config_distinct.factor
 ;
 
+SELECT DISTINCT * FROM toy_data_log; 
