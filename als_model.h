@@ -14,7 +14,8 @@ struct als_model {
 		SMEM_ROW_MAJOR,
 		SMEM_COL_MAJOR,
 		SMEM_ROW_MAJOR_NO_CALC,
-		SMEM_COL_MAJOR_TWO_THREADS
+		SMEM_COL_MAJOR_TWO_THREADS,
+		SMEM_ROW_MAJOR_TENSOR
 	};
 
 	als_model(cuda_sparse_matrix &train_ratings, cuda_sparse_matrix &test_ratings, int f, float lambda, int iters, CALCULATE_VVTS_TYPE calculate_vvts_type, int smem_col_cnt);

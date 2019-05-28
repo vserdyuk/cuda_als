@@ -1,10 +1,49 @@
 #include <memory>
 
+#include <mma.h>
+using namespace nvcuda;
 
 #include "als_model.h"
 #include "cuda_runtime.h"
 #include "cuda_common.h"
 #include "logger.h"
+
+__global__
+void float2half_array(float *float_arr, half *half_arr, int size) {
+	int i = blockDim.x * blockIdx.x + threadIdx.x;
+	if (i < size) {
+		half_arr[i] =  __float2half(float_arr[i]);
+	}
+}
+
+__global__
+void calculate_square_error(float *coo_vals, int *coo_row_idxs, int *coo_col_idxs, int val_cnt, float *UT, float *VT, int f, float *err_arr, int err_size) {
+	int val_id = blockDim.x * blockIdx.x + threadIdx.x;
+
+	if (val_id < val_cnt) {
+		int row = coo_row_idxs[val_id];
+		int col = coo_col_idxs[val_id];
+
+		float actual = coo_vals[val_id];
+
+		float predicted = 0;
+
+		for(int i = 0; i < f; ++i) {
+			float u = UT[f * row + i];
+			float v = VT[f * col + i];
+
+			if(u != u || v != v) {
+				break;
+			} else {
+				predicted += u * v;
+			}
+		}
+
+		float err = actual - predicted;
+
+		atomicAdd(&err_arr[val_id % err_size], err * err);
+	}
+}
 
 __global__
 void calculate_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT) {
@@ -328,6 +367,122 @@ void calculate_vtvs_smem_col_major_two_threads(float *vtvs, int *csr_row_ptrs, i
 	}
 }
 
+// add float to half converter
+
+// multiple warps, each computes one piece
+__global__
+void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt) {
+	extern __shared__ half smem_half [];
+
+	// add smem space for regularization 16*16 matrix?
+	// shoud probably add it in the end to avoid warp divergence
+
+	// assume f % 16 == 0, smem_col_cnt % 16 == 0 !!!!!
+
+	const unsigned int warp_id = threadIdx.x / 32;
+	//const unsigned int lane_id = threadIdx.x % 32;
+
+	wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::col_major> vt_frag;	// actually col-major
+	wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> v_frag;	// vt interpreted as row-major -> vt transposed -> v
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag;
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> reg_frag;
+
+	wmma::fill_fragment(acc_frag, 0.0f);
+
+	int user_idx = blockIdx.x;
+
+	int start = csr_row_ptrs[user_idx];
+	int end = csr_row_ptrs[user_idx + 1];
+
+	int items_cnt = end - start;
+
+	int smem_iters = (items_cnt - 1) / smem_col_cnt + 1;
+
+	int tile_row = warp_id / (f / 16);	// 4 = f(64)/wmma rows(16)
+	int tile_col = warp_id % (f / 16);	// 4 = f(64)/wmma cols(16)
+
+	for(int smem_iter = 0; smem_iter < smem_iters; ++smem_iter) {
+		int smem_items = smem_col_cnt * (smem_iter + 1) < items_cnt ? smem_col_cnt : items_cnt - smem_col_cnt * smem_iter;
+
+		__syncthreads(); // need it?
+
+		// First 64(f) threads read smem_col_cnt columns, others are idle
+		if(threadIdx.x < f) {
+			int smem_col = 0;
+			while(smem_col < smem_items) {
+				smem_half[f * smem_col + threadIdx.x] = VT_half[f * csr_col_idxs[start + smem_iter * smem_col_cnt + smem_col] + threadIdx.x];
+				++smem_col;
+			}
+			// if this smem_iter has less than 16 cols left
+			while(smem_col < smem_col_cnt) {
+				memset(&smem_half[f * smem_col + threadIdx.x], 0, sizeof(smem_half[0]));
+				++smem_col;
+			}
+		}
+
+		__syncthreads();
+
+		// actual work
+
+		for(int tile_iter = 0; tile_iter < smem_col_cnt / 16; ++tile_iter) {
+
+			//wmma::load_matrix_sync(a_frag, a + aCol + aRow * lda, lda);
+			//wmma::load_matrix_sync(b_frag, b + bCol + bRow * ldb, ldb);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + tile_row * 16 + tile_iter * f * 16, f);
+			wmma::load_matrix_sync(v_frag, smem_half + tile_col * 16 + tile_iter * f * 16, f);
+
+			wmma::mma_sync(acc_frag, vt_frag, v_frag, acc_frag);
+		}
+	}
+	// TODO: regularization
+
+	/*
+	// for some reason it is unstable, so for now I'm using dumb regularize_vtvs kernel instead of this
+	float *smem_half_reg_term_buf = (float *)(smem_half + smem_col_cnt * f);
+
+
+	if(threadIdx.x < 16 * 16) {
+		smem_half_reg_term_buf[threadIdx.x] = 0;
+	}
+
+	if(threadIdx.x < 16) {
+		smem_half_reg_term_buf[threadIdx.x * 16 + threadIdx.x] = items_cnt * lambda;
+	}
+
+	__syncthreads(); // ?
+
+	if(tile_row == tile_col) {
+		wmma::load_matrix_sync(reg_frag, smem_half_reg_term_buf, 16, wmma::mem_row_major);
+		for(int i = 0; i < reg_frag.num_elements; ++i) {
+			acc_frag.x[i] += reg_frag.x[i];
+		}
+	}
+	*/
+	// store
+
+	// vtvs[user_idx * f * f + out_row + out_col * f] += out;
+	wmma::store_matrix_sync(vtvs + user_idx * f * f + tile_row * 16 * f + tile_col * 16, acc_frag, f, wmma::mem_row_major);
+}
+
+__global__
+void regularize_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int f) {
+	int user_idx = blockIdx.x;
+
+	int start = csr_row_ptrs[user_idx];
+	int end = csr_row_ptrs[user_idx + 1];
+
+	int items_cnt = end - start;
+
+	vtvs[user_idx * f * f + threadIdx.x + threadIdx.x * f] += items_cnt * lambda;
+}
+
+// TODO: warps nr = f / 32
+// e.g. f = 64. within smsem iter each warp loops through its half of vvt
+// and stores current smem part in shared memory
+// less warps needed, but adds loop through hafl of vvt
+
+
 std::string als_model::to_string(CALCULATE_VVTS_TYPE calculate_vvts_type) {
 	switch(calculate_vvts_type) {
 		case CALCULATE_VVTS_TYPE::SIMPLE: return "SIMPLE";
@@ -335,6 +490,7 @@ std::string als_model::to_string(CALCULATE_VVTS_TYPE calculate_vvts_type) {
 		case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR: return "SMEM_COL_MAJOR";
 		case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_NO_CALC: return "SMEM_ROW_MAJOR_NO_CALC";
 		case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS: return "SMEM_COL_MAJOR_TWO_THREADS";
+		case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR: return "SMEM_ROW_MAJOR_TENSOR";
 		default: return "UNKNOWN";
 	}
 }
@@ -477,12 +633,14 @@ void als_model::train() {
 #endif
 
 			int smem_size = 0;
+			half *d_VT_half = 0;
 
 			switch (calculate_vvts_type) {
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR:
 			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR:
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_NO_CALC:
 			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR:
 				smem_size = smem_col_cnt * f * sizeof(d_VT[0]);
 				g_logger.log("vtvs smem_col_cnt=" + std::to_string(smem_col_cnt) + " smem_size=" + std::to_string(smem_size), true);
 			}
@@ -521,6 +679,25 @@ void als_model::train() {
 				calculate_vtvs_smem_col_major_two_threads<<<m, f, smem_size>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
 						train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT, smem_col_cnt
 				);
+				break;
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR:
+				if(f % 16 != 0) {
+					throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR: f(" + std::to_string(f) + ") % 16 should be equal to 0");
+				}
+				if(smem_col_cnt % 16 != 0) {
+					throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR: smem_col_cnt(" + std::to_string(smem_col_cnt) + ") % 16 should be equal to 0");
+				}
+				CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_VT_half, n * f * sizeof(d_VT_half[0])));
+				float2half_array<<<(n*f-1)/1024 + 1, 1024>>>(d_VT, d_VT_half, f*n);
+				// void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt)
+				calculate_vtvs_smem_row_major_tensor<<<m, (f * f / 16 / 16) * 32, smem_size>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
+						train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT_half, smem_col_cnt
+				);
+				//void regularize_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda) {
+				regularize_vtvs<<<m, f>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
+						train_ratings.d_csr_coo_col_idxs, lambda, f
+				);
+				CUDA_CHECK(cudaFree(d_VT_half));
 				break;
 			case CALCULATE_VVTS_TYPE::SIMPLE:
 			default:
@@ -700,12 +877,14 @@ void als_model::train() {
 			// Naming is kept for U update for easier debugging
 
 			int smem_size = 0;
+			half *d_UT_half = 0;
 
 			switch (calculate_vvts_type) {
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR:
 			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR:
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_NO_CALC:
 			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR:
 				smem_size = smem_col_cnt * f * sizeof(d_UT[0]);
 				g_logger.log("utus smem_col_cnt=" + std::to_string(smem_col_cnt) + " smem_size=" + std::to_string(smem_size), true);
 			}
@@ -745,6 +924,25 @@ void als_model::train() {
 						train_ratings.d_csc_row_idxs, lambda, n, f, d_UT, smem_col_cnt
 				);
 				break;
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR:
+				if(f % 16 != 0) {
+					throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR: f(" + std::to_string(f) + ") % 16 should be equal to 0");
+				}
+				if(smem_col_cnt % 16 != 0) {
+					throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR: smem_col_cnt(" + std::to_string(smem_col_cnt) + ") % 16 should be equal to 0");
+				}
+				CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_UT_half, m * f * sizeof(d_UT_half[0])));
+				float2half_array<<<(m*f-1)/1024 + 1, 1024>>>(d_UT, d_UT_half, f*m);
+				// void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt)
+				calculate_vtvs_smem_row_major_tensor<<<n, (f * f / 16 / 16) * 32, smem_size>>>(d_utus, train_ratings.d_csc_col_ptrs,
+						train_ratings.d_csc_row_idxs, lambda, n, f, d_UT_half, smem_col_cnt
+				);
+				//void regularize_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda) {
+				regularize_vtvs<<<m, f>>>(d_utus, train_ratings.d_csc_col_ptrs,
+						train_ratings.d_csc_row_idxs, lambda, f
+				);
+				CUDA_CHECK(cudaFree(d_UT_half));
+				break;
 			case CALCULATE_VVTS_TYPE::SIMPLE:
 			default:
 				// void calculate_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT) {
@@ -760,7 +958,7 @@ void als_model::train() {
 #endif
 
 #ifdef USE_LOGGER
-			g_logger.log("utus calculation done", true);
+			g_logger.log("utus calculation done type=" + to_string(calculate_vvts_type), true);
 #endif
 
 			// TODO: single array of max(m, n) allocated in model constructor
@@ -793,7 +991,7 @@ void als_model::train() {
 #endif
 
 #ifdef USE_LOGGER
-			g_logger.log("utus batched LU factorization done type=" + to_string(calculate_vvts_type), true);
+			g_logger.log("utus batched LU factorization done", true);
 #endif
 
 			int getrs_info;
@@ -851,6 +1049,43 @@ void als_model::train() {
 #endif
 
 		}	// update V block
+
+		float *d_err_arr = 0;
+		int err_size = 1000;
+		CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_err_arr, err_size * sizeof(d_err_arr[0])));
+
+
+		CUDA_CHECK(cudaMemset(d_err_arr, 0, err_size * sizeof(float)));
+
+		//void calculate_square_error(float *coo_vals, int *coo_row_idxs, coo_col_idxs, int val_cnt, float *UT, float *VT, int f, float *err_arr, int err_size) {
+		calculate_square_error<<<(train_ratings.val_cnt - 1) / 256 + 1, 256>>>(train_ratings.d_csr_coo_vals, train_ratings.d_coo_row_idxs,
+				train_ratings.d_csr_coo_col_idxs, train_ratings.val_cnt, d_UT, d_VT, f, d_err_arr, err_size
+		);
+
+		float square_err_train = 0;
+
+		CUBLAS_CHECK(cublasSasum(cublas_handle, err_size, d_err_arr, 1, &square_err_train));
+
+		CUDA_CHECK(cudaDeviceSynchronize());
+
+		g_logger.log("train root-mean-square error: " + std::to_string(sqrt(square_err_train) / train_ratings.val_cnt), true);
+
+		CUDA_CHECK(cudaMemset(d_err_arr, 0, err_size * sizeof(float)));
+
+		//void calculate_square_error(float *coo_vals, int *coo_row_idxs, coo_col_idxs, int val_cnt, float *UT, float *VT, int f, float *err_arr, int err_size) {
+		calculate_square_error<<<(test_ratings.val_cnt - 1) / 256 + 1, 256>>>(test_ratings.d_csr_coo_vals, test_ratings.d_coo_row_idxs,
+				test_ratings.d_csr_coo_col_idxs, test_ratings.val_cnt, d_UT, d_VT, f, d_err_arr, err_size
+		);
+
+		float square_err_test = 0;
+
+		CUBLAS_CHECK(cublasSasum(cublas_handle, err_size, d_err_arr, 1, &square_err_test));
+
+		CUDA_CHECK(cudaDeviceSynchronize());
+
+		g_logger.log("test root-mean-square error: " + std::to_string(sqrt(square_err_test) / test_ratings.val_cnt), true);
+
+		CUDA_CHECK(cudaFree(d_err_arr));
 	}	// iters loop
 
 #ifdef USE_LOGGER
@@ -859,8 +1094,8 @@ void als_model::train() {
 
 	// final result from device to host
 
-	CUDA_CHECK(cudaMemcpy(h_VT, d_VT, m * f, cudaMemcpyDeviceToHost));
-	CUDA_CHECK(cudaMemcpy(h_UT, d_UT, n * f, cudaMemcpyDeviceToHost));
+	CUDA_CHECK(cudaMemcpy(h_VT, d_VT, n * f, cudaMemcpyDeviceToHost));
+	CUDA_CHECK(cudaMemcpy(h_UT, d_UT, m * f, cudaMemcpyDeviceToHost));
 
 #ifdef USE_LOGGER
 	g_logger.log("als model training done", true);
