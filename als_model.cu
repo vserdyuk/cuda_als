@@ -466,6 +466,94 @@ void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *c
 }
 
 __global__
+void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt) {
+	extern __shared__ half smem_half [];
+
+	// add smem space for regularization 16*16 matrix?
+	// shoud probably add it in the end to avoid warp divergence
+
+	// assume f % 16 == 0, smem_col_cnt % 16 == 0 !!!!!
+
+	const unsigned int warp_id = threadIdx.x / 32;
+	//const unsigned int lane_id = threadIdx.x % 32;
+
+	wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::col_major> vt_frag;	// actually col-major
+	wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> v_frag;	// vt interpreted as row-major -> vt transposed -> v
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag;
+
+	wmma::fill_fragment(acc_frag, 0.0f);
+
+	int user_idx = blockIdx.x;
+
+	int start = csr_row_ptrs[user_idx];
+	int end = csr_row_ptrs[user_idx + 1];
+
+	int items_cnt = end - start;
+
+	int smem_iters = (items_cnt - 1) / smem_col_cnt + 1;
+
+	//int tile_row = warp_id / (f / 16);	// 4 = f(64)/wmma rows(16)
+	//int tile_col = warp_id % (f / 16);	// 4 = f(64)/wmma cols(16)
+
+	int tile_row = 0;
+	int tile_col = 0;
+
+	int tile_dim = f / 16;	// tile_dim * tile_dim square
+
+	for(int col = 0; col < tile_dim; ++col) {
+		int next_col_start = (2 * tile_dim - col) * (col + 1) / 2;
+		if(warp_id < next_col_start) {
+			tile_row = tile_dim + warp_id - next_col_start;
+			tile_col = col;
+			break;
+		}
+	}
+
+	for(int smem_iter = 0; smem_iter < smem_iters; ++smem_iter) {
+		int smem_items = smem_col_cnt * (smem_iter + 1) < items_cnt ? smem_col_cnt : items_cnt - smem_col_cnt * smem_iter;
+
+		__syncthreads(); // need it?
+
+		// First 64(f) threads read smem_col_cnt columns, others are idle
+		if(threadIdx.x < f) {
+			int smem_col = 0;
+			while(smem_col < smem_items) {
+				smem_half[f * smem_col + threadIdx.x] = VT_half[f * csr_col_idxs[start + smem_iter * smem_col_cnt + smem_col] + threadIdx.x];
+				++smem_col;
+			}
+			// if this smem_iter has less than 16 cols left
+			while(smem_col < smem_col_cnt) {
+				memset(&smem_half[f * smem_col + threadIdx.x], 0, sizeof(smem_half[0]));
+				++smem_col;
+			}
+		}
+
+		__syncthreads();
+
+		// actual work
+
+		for(int tile_iter = 0; tile_iter < smem_col_cnt / 16; ++tile_iter) {
+
+			//wmma::load_matrix_sync(a_frag, a + aCol + aRow * lda, lda);
+			//wmma::load_matrix_sync(b_frag, b + bCol + bRow * ldb, ldb);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + tile_row * 16 + tile_iter * f * 16, f);
+			wmma::load_matrix_sync(v_frag, smem_half + tile_col * 16 + tile_iter * f * 16, f);
+
+			wmma::mma_sync(acc_frag, vt_frag, v_frag, acc_frag);
+		}
+	}
+
+	// store
+
+	wmma::store_matrix_sync(vtvs + user_idx * f * f + tile_row * 16 * f + tile_col * 16, acc_frag, f, wmma::mem_row_major);
+
+	if(tile_row != tile_col) {
+		wmma::store_matrix_sync(vtvs + user_idx * f * f + tile_col * 16 * f + tile_row * 16, acc_frag, f, wmma::mem_row_major);
+	}
+}
+
+__global__
 void regularize_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int f) {
 	int user_idx = blockIdx.x;
 
@@ -491,6 +579,7 @@ std::string als_model::to_string(CALCULATE_VVTS_TYPE calculate_vvts_type) {
 		case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_NO_CALC: return "SMEM_ROW_MAJOR_NO_CALC";
 		case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS: return "SMEM_COL_MAJOR_TWO_THREADS";
 		case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR: return "SMEM_ROW_MAJOR_TENSOR";
+		case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC: return "SMEM_ROW_MAJOR_TENSOR_SYMMETRIC";
 		default: return "UNKNOWN";
 	}
 }
@@ -634,6 +723,7 @@ void als_model::train() {
 
 			int smem_size = 0;
 			half *d_VT_half = 0;
+			int symmetric_tiles_cnt = 0;
 
 			switch (calculate_vvts_type) {
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR:
@@ -641,6 +731,7 @@ void als_model::train() {
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_NO_CALC:
 			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR:
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC:
 				smem_size = smem_col_cnt * f * sizeof(d_VT[0]);
 				g_logger.log("vtvs smem_col_cnt=" + std::to_string(smem_col_cnt) + " smem_size=" + std::to_string(smem_size), true);
 			}
@@ -691,6 +782,28 @@ void als_model::train() {
 				float2half_array<<<(n*f-1)/1024 + 1, 1024>>>(d_VT, d_VT_half, f*n);
 				// void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt)
 				calculate_vtvs_smem_row_major_tensor<<<m, (f * f / 16 / 16) * 32, smem_size>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
+						train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT_half, smem_col_cnt
+				);
+				//void regularize_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda) {
+				regularize_vtvs<<<m, f>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
+						train_ratings.d_csr_coo_col_idxs, lambda, f
+				);
+				CUDA_CHECK(cudaFree(d_VT_half));
+				break;
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC:
+				if(f % 16 != 0) {
+					throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR_SYMMETRIC: f(" + std::to_string(f) + ") % 16 should be equal to 0");
+				}
+				if(smem_col_cnt % 16 != 0) {
+					throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR_SYMMETRIC: smem_col_cnt(" + std::to_string(smem_col_cnt) + ") % 16 should be equal to 0");
+				}
+				CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_VT_half, n * f * sizeof(d_VT_half[0])));
+				float2half_array<<<(n*f-1)/1024 + 1, 1024>>>(d_VT, d_VT_half, f*n);
+
+				symmetric_tiles_cnt = (f / 16) * (f / 16 + 1) / 2;
+
+				// void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt)
+				calculate_vtvs_smem_row_major_tensor_symmetric<<<m, symmetric_tiles_cnt * 32, smem_size>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
 						train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT_half, smem_col_cnt
 				);
 				//void regularize_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda) {
@@ -878,6 +991,7 @@ void als_model::train() {
 
 			int smem_size = 0;
 			half *d_UT_half = 0;
+			int symmetric_tiles_cnt;
 
 			switch (calculate_vvts_type) {
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR:
@@ -885,6 +999,7 @@ void als_model::train() {
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_NO_CALC:
 			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR:
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC:
 				smem_size = smem_col_cnt * f * sizeof(d_UT[0]);
 				g_logger.log("utus smem_col_cnt=" + std::to_string(smem_col_cnt) + " smem_size=" + std::to_string(smem_size), true);
 			}
@@ -935,6 +1050,28 @@ void als_model::train() {
 				float2half_array<<<(m*f-1)/1024 + 1, 1024>>>(d_UT, d_UT_half, f*m);
 				// void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt)
 				calculate_vtvs_smem_row_major_tensor<<<n, (f * f / 16 / 16) * 32, smem_size>>>(d_utus, train_ratings.d_csc_col_ptrs,
+						train_ratings.d_csc_row_idxs, lambda, n, f, d_UT_half, smem_col_cnt
+				);
+				//void regularize_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda) {
+				regularize_vtvs<<<m, f>>>(d_utus, train_ratings.d_csc_col_ptrs,
+						train_ratings.d_csc_row_idxs, lambda, f
+				);
+				CUDA_CHECK(cudaFree(d_UT_half));
+				break;
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC:
+				if(f % 16 != 0) {
+					throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR_SYMMETRIC: f(" + std::to_string(f) + ") % 16 should be equal to 0");
+				}
+				if(smem_col_cnt % 16 != 0) {
+					throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR_SYMMETRIC: smem_col_cnt(" + std::to_string(smem_col_cnt) + ") % 16 should be equal to 0");
+				}
+				CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_UT_half, m * f * sizeof(d_UT_half[0])));
+				float2half_array<<<(m*f-1)/1024 + 1, 1024>>>(d_UT, d_UT_half, f*m);
+
+				symmetric_tiles_cnt = (f / 16) * (f / 16 + 1) / 2;
+
+				// void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt)
+				calculate_vtvs_smem_row_major_tensor_symmetric<<<n, symmetric_tiles_cnt * 32, smem_size>>>(d_utus, train_ratings.d_csc_col_ptrs,
 						train_ratings.d_csc_row_idxs, lambda, n, f, d_UT_half, smem_col_cnt
 				);
 				//void regularize_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda) {

@@ -19,7 +19,8 @@ int main(int argc, char **argv) {
 	int n = atoi(argv[2]);
 	//int f = atoi(argv[3]);
 	//int f = 80;
-	int f = 64;
+	//int f = 64;
+	int f = 96;
 	long nnz_train = atoi(argv[4]);
 	long nnz_test = atoi(argv[5]);
 	float lambda = atof(argv[6]);
@@ -31,7 +32,8 @@ int main(int argc, char **argv) {
 	//als_model::CALCULATE_VVTS_TYPE als_calculate_vvts_type = als_model::CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR;	// easier debugging
 	//als_model::CALCULATE_VVTS_TYPE als_calculate_vvts_type = als_model::CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_NO_CALC;	// easier debugging
 	//als_model::CALCULATE_VVTS_TYPE als_calculate_vvts_type = als_model::CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR;	// easier debugging
-	als_model::CALCULATE_VVTS_TYPE als_calculate_vvts_type = als_model::CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR;	// easier debugging
+	//als_model::CALCULATE_VVTS_TYPE als_calculate_vvts_type = als_model::CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR;	// easier debugging
+	als_model::CALCULATE_VVTS_TYPE als_calculate_vvts_type = als_model::CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC;	// easier debugging
 	//int smem_col_cnt = 112;	// shoud be calculated based on device shared memory size
 	int smem_col_cnt = 32;	// shoud be calculated based on device shared memory size
 	//int smem_col_cnt = 112;	// shoud be calculated based on device shared memory size
