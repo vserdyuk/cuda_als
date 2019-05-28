@@ -97,3 +97,32 @@ FROM
 ;
 
 SELECT DISTINCT * FROM toy_data_log; 
+
+
+SELECT COUNT(DISTINCT movieId)
+FROM "ml-latest_ratings";
+-- 53889
+
+SELECT COUNT(DISTINCT userId)
+FROM "ml-latest_ratings";
+-- 283228
+
+SELECT COUNT(*)
+FROM "ml-latest_ratings";
+-- 27753444
+
+SELECT MAX(movieId)
+FROM "ml-latest_ratings";
+
+WITH distinct_user_id as (
+	SELECT DISTINCT userId
+	FROM "ml-latest_ratings"
+)
+SELECT
+	userId,
+	_rowid_ as row_id
+FROM distinct_user_id;
+
+
+
+

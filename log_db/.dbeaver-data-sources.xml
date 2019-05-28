@@ -21,5 +21,8 @@
 			<property name="suppressHeaders" value="false"/>
 		</connection>
 	</data-source>
+	<data-source id="csvjdbc-16affcb685e-72d6588fc74741d9" provider="generic" driver="csvjdbc" name="Flat files - ml-latest" save-password="true" read-only="false">
+		<connection server="" database="/home/vladimir/src/cuda_als/log/ml-latest" url="jdbc:relique:csv:/home/vladimir/src/cuda_als/log/ml-latest" type="dev"/>
+	</data-source>
 	<filters/>
 </data-sources>
