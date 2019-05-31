@@ -6,7 +6,10 @@ using namespace nvcuda;
 #include "als_model.h"
 #include "cuda_runtime.h"
 #include "cuda_common.h"
+
+#ifdef USE_LOGGER
 #include "logger.h"
+#endif
 
 __global__
 void float2half_array(float *float_arr, half *half_arr, int size) {
@@ -652,13 +655,14 @@ void als_model::train() {
 
 #ifdef USE_LOGGER
 		g_logger.als_iter = it + 1;
+		g_logger.event_started(logger::EVENT_TYPE::ALS_ITER);
 #endif
 
 		// ---------- update U ----------
 		{
 
 #ifdef USE_LOGGER
-			g_logger.log("update U started", true);
+			g_logger.event_started(logger::EVENT_TYPE::ALS_UPDATE_U);
 #endif
 
 			// device ratings multiplied by global item factor matrix, m x f (ytheta)
@@ -733,7 +737,11 @@ void als_model::train() {
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR:
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC:
 				smem_size = smem_col_cnt * f * sizeof(d_VT[0]);
+
+#ifdef USE_LOGGER
 				g_logger.log("vtvs smem_col_cnt=" + std::to_string(smem_col_cnt) + " smem_size=" + std::to_string(smem_size), true);
+#endif
+
 			}
 
 			switch (calculate_vvts_type) {
@@ -801,6 +809,10 @@ void als_model::train() {
 				float2half_array<<<(n*f-1)/1024 + 1, 1024>>>(d_VT, d_VT_half, f*n);
 
 				symmetric_tiles_cnt = (f / 16) * (f / 16 + 1) / 2;
+
+#ifdef USE_LOGGER
+				g_logger.log("vtvs symmetric_tiles_cnt=" + std::to_string(symmetric_tiles_cnt), true);
+#endif
 
 				// void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt)
 				calculate_vtvs_smem_row_major_tensor_symmetric<<<m, symmetric_tiles_cnt * 32, smem_size>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
@@ -913,7 +925,7 @@ void als_model::train() {
 			CUDA_CHECK(cudaFree(d_d_VTRT_ptrs));
 
 #ifdef USE_LOGGER
-			g_logger.log("update U done", true);
+			g_logger.event_finished(logger::EVENT_TYPE::ALS_UPDATE_U, true);
 #endif
 
 		}	// update U block
@@ -921,7 +933,7 @@ void als_model::train() {
 		{
 
 #ifdef USE_LOGGER
-			g_logger.log("update V started", true);
+			g_logger.event_started(logger::EVENT_TYPE::ALS_UPDATE_V);
 #endif
 
 			// device transposed ratings multiplied by global user factor matrix, m x f (yTX)
@@ -1001,7 +1013,11 @@ void als_model::train() {
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR:
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC:
 				smem_size = smem_col_cnt * f * sizeof(d_UT[0]);
+
+#ifdef USE_LOGGER
 				g_logger.log("utus smem_col_cnt=" + std::to_string(smem_col_cnt) + " smem_size=" + std::to_string(smem_size), true);
+#endif
+
 			}
 
 			switch (calculate_vvts_type) {
@@ -1182,7 +1198,8 @@ void als_model::train() {
 			CUDA_CHECK(cudaFree(d_d_UTR_ptrs));
 
 #ifdef USE_LOGGER
-			g_logger.log("update V done", true);
+			//g_logger.log("update V done", true);
+			g_logger.event_finished(logger::EVENT_TYPE::ALS_UPDATE_V, true);
 #endif
 
 		}	// update V block
@@ -1205,7 +1222,9 @@ void als_model::train() {
 
 		CUDA_CHECK(cudaDeviceSynchronize());
 
+#ifdef USE_LOGGER
 		g_logger.log("train root-mean-square error: " + std::to_string(sqrt(square_err_train) / train_ratings.val_cnt), true);
+#endif
 
 		CUDA_CHECK(cudaMemset(d_err_arr, 0, err_size * sizeof(float)));
 
@@ -1220,7 +1239,10 @@ void als_model::train() {
 
 		CUDA_CHECK(cudaDeviceSynchronize());
 
+#ifdef USE_LOGGER
 		g_logger.log("test root-mean-square error: " + std::to_string(sqrt(square_err_test) / test_ratings.val_cnt), true);
+		g_logger.event_finished(logger::EVENT_TYPE::ALS_ITER, true);
+#endif
 
 		CUDA_CHECK(cudaFree(d_err_arr));
 	}	// iters loop

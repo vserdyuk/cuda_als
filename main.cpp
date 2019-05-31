@@ -35,19 +35,15 @@ int main(int argc, char **argv) {
 	//als_model::CALCULATE_VVTS_TYPE als_calculate_vvts_type = als_model::CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR;	// easier debugging
 	als_model::CALCULATE_VVTS_TYPE als_calculate_vvts_type = als_model::CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC;	// easier debugging
 	//int smem_col_cnt = 112;	// shoud be calculated based on device shared memory size
-	int smem_col_cnt = 32;	// shoud be calculated based on device shared memory size
+	int smem_col_cnt = 32;	// shoud be calculated based on device shared memory sized
 	//int smem_col_cnt = 112;	// shoud be calculated based on device shared memory size
 
 #ifdef USE_LOGGER
 	std::string log_folder = argv[11];
-#endif
 
 	std::cout << std::fixed;
 
-#ifdef USE_LOGGER
 	g_logger.init(log_folder);
-#endif
-
 	std::stringstream ss;
 
 	ss << "m=" << m << " n=" << n << " f=" << f << " nnz_train=" << nnz_train << " nnz_test=" << nnz_test << " lambda=" << lambda
@@ -56,6 +52,7 @@ int main(int argc, char **argv) {
 	;
 
 	g_logger.log(ss.str(), true);
+#endif
 
 	cudaSetDevice(CUDA_DEVICE_ID);
 
