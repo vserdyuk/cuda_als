@@ -49,7 +49,7 @@ void calculate_square_error(float *coo_vals, int *coo_row_idxs, int *coo_col_idx
 }
 
 __global__
-void calculate_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT) {
+void calculate_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int m_batch_offset) {
 	// left matrix is vt (i.e. columns from VT for items rated by current user)
 	// top matrix is v (i.e. vt transposed)
 
@@ -78,7 +78,7 @@ void calculate_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lam
 	 */
 
 	if(threadIdx.x < f) {
-		int user_idx = blockIdx.x;
+		int user_idx = blockIdx.x + m_batch_offset;
 
 		int start = csr_row_ptrs[user_idx];
 		int end = csr_row_ptrs[user_idx + 1];
@@ -127,11 +127,11 @@ void calculate_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lam
 }
 
 __global__
-void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
+void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt, int m_batch_offset) {
 	extern __shared__ float smem [];
 
 	if(threadIdx.x < f) {
-		int user_idx = blockIdx.x;
+		int user_idx = blockIdx.x + m_batch_offset;
 
 		int start = csr_row_ptrs[user_idx];
 		int end = csr_row_ptrs[user_idx + 1];
@@ -189,16 +189,16 @@ void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_
 		}
 
 		// regularization
-		vtvs[user_idx * f * f + out_col + out_col * f] += items_cnt * lambda;
+		vtvs[blockIdx.x * f * f + out_col + out_col * f] += items_cnt * lambda;
 	}
 }
 
 __global__
-void calculate_vtvs_smem_row_major_no_calc(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
+void calculate_vtvs_smem_row_major_no_calc(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt, int m_batch_offset) {
 	extern __shared__ float smem [];
 
 	if(threadIdx.x < f) {
-		int user_idx = blockIdx.x;
+		int user_idx = blockIdx.x + m_batch_offset;
 
 		int start = csr_row_ptrs[user_idx];
 		int end = csr_row_ptrs[user_idx + 1];
@@ -227,11 +227,11 @@ void calculate_vtvs_smem_row_major_no_calc(float *vtvs, int *csr_row_ptrs, int *
 }
 
 __global__
-void calculate_vtvs_smem_col_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
+void calculate_vtvs_smem_col_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt, int m_batch_offset) {
 	extern __shared__ float smem [];
 
 	if(threadIdx.x < f) {
-		int user_idx = blockIdx.x;
+		int user_idx = blockIdx.x + m_batch_offset;
 
 		int start = csr_row_ptrs[user_idx];
 		int end = csr_row_ptrs[user_idx + 1];
@@ -293,16 +293,16 @@ void calculate_vtvs_smem_col_major(float *vtvs, int *csr_row_ptrs, int *csr_col_
 		}
 
 		// regularization
-		vtvs[user_idx * f * f + out_col + out_col * f] += items_cnt * lambda;
+		vtvs[blockIdx.x * f * f + out_col + out_col * f] += items_cnt * lambda;
 	}
 }
 
 __global__
-void calculate_vtvs_smem_col_major_two_threads(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
+void calculate_vtvs_smem_col_major_two_threads(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt, int m_batch_offset) {
 	extern __shared__ float smem [];
 
 	if(threadIdx.x < f) {
-		int user_idx = blockIdx.x;
+		int user_idx = blockIdx.x + m_batch_offset;
 
 		int start = csr_row_ptrs[user_idx];
 		int end = csr_row_ptrs[user_idx + 1];
@@ -366,7 +366,7 @@ void calculate_vtvs_smem_col_major_two_threads(float *vtvs, int *csr_row_ptrs, i
 		}
 
 		// regularization
-		vtvs[user_idx * f * f + out_col + out_col * f] += items_cnt * lambda;
+		vtvs[blockIdx.x * f * f + out_col + out_col * f] += items_cnt * lambda;
 	}
 }
 
@@ -374,7 +374,7 @@ void calculate_vtvs_smem_col_major_two_threads(float *vtvs, int *csr_row_ptrs, i
 
 // multiple warps, each computes one piece
 __global__
-void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt) {
+void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt, int m_batch_offset) {
 	extern __shared__ half smem_half [];
 
 	// add smem space for regularization 16*16 matrix?
@@ -392,7 +392,7 @@ void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *c
 
 	wmma::fill_fragment(acc_frag, 0.0f);
 
-	int user_idx = blockIdx.x;
+	int user_idx = blockIdx.x + m_batch_offset;
 
 	int start = csr_row_ptrs[user_idx];
 	int end = csr_row_ptrs[user_idx + 1];
@@ -465,11 +465,11 @@ void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *c
 	// store
 
 	// vtvs[user_idx * f * f + out_row + out_col * f] += out;
-	wmma::store_matrix_sync(vtvs + user_idx * f * f + tile_row * 16 * f + tile_col * 16, acc_frag, f, wmma::mem_row_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + tile_row * 16 * f + tile_col * 16, acc_frag, f, wmma::mem_row_major);
 }
 
 __global__
-void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt) {
+void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt, int m_batch_offset) {
 	extern __shared__ half smem_half [];
 
 	// add smem space for regularization 16*16 matrix?
@@ -486,7 +486,7 @@ void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_pt
 
 	wmma::fill_fragment(acc_frag, 0.0f);
 
-	int user_idx = blockIdx.x;
+	int user_idx = blockIdx.x + m_batch_offset;
 
 	int start = csr_row_ptrs[user_idx];
 	int end = csr_row_ptrs[user_idx + 1];
@@ -549,23 +549,23 @@ void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_pt
 
 	// store
 
-	wmma::store_matrix_sync(vtvs + user_idx * f * f + tile_row * 16 * f + tile_col * 16, acc_frag, f, wmma::mem_row_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + tile_row * 16 * f + tile_col * 16, acc_frag, f, wmma::mem_row_major);
 
 	if(tile_row != tile_col) {
-		wmma::store_matrix_sync(vtvs + user_idx * f * f + tile_col * 16 * f + tile_row * 16, acc_frag, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + tile_col * 16 * f + tile_row * 16, acc_frag, f, wmma::mem_row_major);
 	}
 }
 
 __global__
-void regularize_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int f) {
-	int user_idx = blockIdx.x;
+void regularize_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int f, int m_batch_offset) {
+	int user_idx = blockIdx.x + m_batch_offset;
 
 	int start = csr_row_ptrs[user_idx];
 	int end = csr_row_ptrs[user_idx + 1];
 
 	int items_cnt = end - start;
 
-	vtvs[user_idx * f * f + threadIdx.x + threadIdx.x * f] += items_cnt * lambda;
+	vtvs[blockIdx.x * f * f + threadIdx.x + threadIdx.x * f] += items_cnt * lambda;
 }
 
 // TODO: warps nr = f / 32
@@ -587,9 +587,12 @@ std::string als_model::to_string(CALCULATE_VVTS_TYPE calculate_vvts_type) {
 	}
 }
 
-als_model::als_model(cuda_sparse_matrix &train_ratings, cuda_sparse_matrix &test_ratings, int f, float lambda, int iters, CALCULATE_VVTS_TYPE calculate_vvts_type, int smem_col_cnt):
-		train_ratings(train_ratings), test_ratings(test_ratings), f(f), lambda(lambda), iters(iters), calculate_vvts_type(calculate_vvts_type),
-		smem_col_cnt(smem_col_cnt) {
+als_model::als_model(cuda_sparse_matrix &train_ratings, cuda_sparse_matrix &test_ratings, int f,
+		float lambda, int iters, CALCULATE_VVTS_TYPE calculate_vvts_type, int smem_col_cnt,
+		int m_batches, int n_batches):
+		train_ratings(train_ratings), test_ratings(test_ratings), f(f), lambda(lambda), iters(iters),
+		calculate_vvts_type(calculate_vvts_type), smem_col_cnt(smem_col_cnt), m_batches(m_batches),
+		n_batches(n_batches) {
 	m = train_ratings.row_cnt;
 	n = train_ratings.col_cnt;
 
@@ -599,17 +602,14 @@ als_model::als_model(cuda_sparse_matrix &train_ratings, cuda_sparse_matrix &test
 	CUDA_CHECK(cudaMallocHost((void **)&h_UT, m * f * sizeof(h_UT[0])));
 	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_UT, m * f * sizeof(d_UT[0])));
 
-	// на первом этапе без X_BATCH размер f * f * m, затем будет f * f * batch_size
-	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_vtvs, f * f * m * sizeof(d_vtvs[0])));
+	int m_first_batch_size = (m - 1) / m_batches + 1;
+	int n_first_batch_size = (n - 1) / n_batches + 1;
 
-	// на первом этапе без THETA_BATCH размер f * f * n, затем будет f * f * batch_size
-	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_utus, f * f * n * sizeof(d_utus[0])));
+	int x_size = m_first_batch_size > n_first_batch_size ? m_first_batch_size : n_first_batch_size;
 
-	// float *d_VTRT;	// device transposed global item factor matrix multiplied by transposed ratings, f x m (confusing name ythetaT, IMHO thetaTyT is clearer)
+	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_xtxs, f * f * x_size * sizeof(d_xtxs[0])));
 
 	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_VTRT, f * m * sizeof(d_VTRT[0])));
-
-	// float *d_UTR;	// device transposed global user factor matrix multiplied by ratings, f x n (confusing name yTXT, IMHO XTy is clearer)
 
 	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_UTR, f * n * sizeof(d_UTR[0])));
 
@@ -624,8 +624,7 @@ als_model::~als_model() {
 	CUDA_CHECK(cudaFreeHost(h_UT));
 	CUDA_CHECK(cudaFree(d_UT));
 
-	CUDA_CHECK(cudaFree(d_vtvs));
-	CUDA_CHECK(cudaFree(d_utus));
+	CUDA_CHECK(cudaFree(d_xtxs));
 
 	CUSPARSE_CHECK(cusparseDestroy(cusparse_handle));
 	CUBLAS_CHECK(cublasDestroy(cublas_handle));
@@ -743,186 +742,194 @@ void als_model::train() {
 #endif
 
 			}
-
 			switch (calculate_vvts_type) {
-			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR:
-				// void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
-				calculate_vtvs_smem_row_major<<<m, f, smem_size>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
-						train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT, smem_col_cnt
-				);
-				break;
-			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_NO_CALC:
-				// void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
-				calculate_vtvs_smem_row_major_no_calc<<<m, f, smem_size>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
-						train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT, smem_col_cnt
-				);
-				break;
-			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR:
-				if(f < smem_col_cnt) {
-					throw std::runtime_error("SMEM_COL_MAJOR: f(" + std::to_string(f) + ") should be greater than or equal to smem_col_cnt("
-							+ std::to_string(smem_col_cnt) + ")"
+				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR:
+				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC:
+					CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_VT_half, n * f * sizeof(d_VT_half[0])));
+					float2half_array<<<(n*f-1)/1024 + 1, 1024>>>(d_VT, d_VT_half, f*n);
+			}
+
+			for(int m_batch = 0; m_batch < m_batches; ++m_batch) {
+				int m_first_batch_size = (m - 1) / m_batches + 1;
+
+				int m_batch_size = m_first_batch_size * (m_batch + 1) < m ? m_first_batch_size : m - m_first_batch_size * m_batch;
+
+				int m_batch_offset = m_batch * m_first_batch_size;
+
+				switch (calculate_vvts_type) {
+				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR:
+					calculate_vtvs_smem_row_major<<<m_batch_size, f, smem_size>>>(d_xtxs, train_ratings.d_csr_row_ptrs,
+							train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT, smem_col_cnt, m_batch_offset
+					);
+					break;
+				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_NO_CALC:
+					calculate_vtvs_smem_row_major_no_calc<<<m_batch_size, f, smem_size>>>(d_xtxs, train_ratings.d_csr_row_ptrs,
+							train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT, smem_col_cnt, m_batch_offset
+					);
+					break;
+				case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR:
+					if(f < smem_col_cnt) {
+						throw std::runtime_error("SMEM_COL_MAJOR: f(" + std::to_string(f) + ") should be greater than or equal to smem_col_cnt("
+								+ std::to_string(smem_col_cnt) + ")"
+						);
+					}
+					calculate_vtvs_smem_col_major<<<m_batch_size, f, smem_size>>>(d_xtxs, train_ratings.d_csr_row_ptrs,
+							train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT, smem_col_cnt, m_batch_offset
+					);
+					break;
+				case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
+					if(f < smem_col_cnt * 2) {
+						throw std::runtime_error("SMEM_COL_MAJOR_TWO_THREADS: f(" + std::to_string(f) + ") should be greater than or equal to smem_col_cnt * 2 ("
+								+ std::to_string(smem_col_cnt) + " * 2 = " + std::to_string(smem_col_cnt * 2) + ")"
+						);
+					}
+					calculate_vtvs_smem_col_major_two_threads<<<m_batch_size, f, smem_size>>>(d_xtxs, train_ratings.d_csr_row_ptrs,
+							train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT, smem_col_cnt, m_batch_offset
+					);
+					break;
+				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR:
+					if(f % 16 != 0) {
+						throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR: f(" + std::to_string(f) + ") % 16 should be equal to 0");
+					}
+					if(smem_col_cnt % 16 != 0) {
+						throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR: smem_col_cnt(" + std::to_string(smem_col_cnt) + ") % 16 should be equal to 0");
+					}
+					calculate_vtvs_smem_row_major_tensor<<<m_batch_size, (f * f / 16 / 16) * 32, smem_size>>>(d_xtxs, train_ratings.d_csr_row_ptrs,
+							train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT_half, smem_col_cnt, m_batch_offset
+					);
+					regularize_vtvs<<<m_batch_size, f>>>(d_xtxs, train_ratings.d_csr_row_ptrs,
+							train_ratings.d_csr_coo_col_idxs, lambda, f, m_batch_offset
+					);
+					break;
+				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC:
+					if(f % 16 != 0) {
+						throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR_SYMMETRIC: f(" + std::to_string(f) + ") % 16 should be equal to 0");
+					}
+					if(smem_col_cnt % 16 != 0) {
+						throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR_SYMMETRIC: smem_col_cnt(" + std::to_string(smem_col_cnt) + ") % 16 should be equal to 0");
+					}
+
+					symmetric_tiles_cnt = (f / 16) * (f / 16 + 1) / 2;
+
+#ifdef USE_LOGGER
+					g_logger.log("vtvs symmetric_tiles_cnt=" + std::to_string(symmetric_tiles_cnt) + " m_batch=" + std::to_string(m_batch), true);
+#endif
+
+					calculate_vtvs_smem_row_major_tensor_symmetric<<<m_batch_size, symmetric_tiles_cnt * 32, smem_size>>>(d_xtxs, train_ratings.d_csr_row_ptrs,
+							train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT_half, smem_col_cnt, m_batch_offset
+					);
+					regularize_vtvs<<<m_batch_size, f>>>(d_xtxs, train_ratings.d_csr_row_ptrs,
+							train_ratings.d_csr_coo_col_idxs, lambda, f, m_batch_offset
+					);
+					break;
+				case CALCULATE_VVTS_TYPE::SIMPLE:
+				default:
+					calculate_vtvs<<<m_batch_size, f>>>(d_xtxs, train_ratings.d_csr_row_ptrs,
+							train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT, m_batch_offset
 					);
 				}
-				// void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
-				calculate_vtvs_smem_col_major<<<m, f, smem_size>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
-						train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT, smem_col_cnt
-				);
-				break;
-			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
-				if(f < smem_col_cnt * 2) {
-					throw std::runtime_error("SMEM_COL_MAJOR_TWO_THREADS: f(" + std::to_string(f) + ") should be greater than or equal to smem_col_cnt * 2 ("
-							+ std::to_string(smem_col_cnt) + " * 2 = " + std::to_string(smem_col_cnt * 2) + ")"
-					);
-				}
-				// void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
-				calculate_vtvs_smem_col_major_two_threads<<<m, f, smem_size>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
-						train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT, smem_col_cnt
-				);
-				break;
-			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR:
-				if(f % 16 != 0) {
-					throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR: f(" + std::to_string(f) + ") % 16 should be equal to 0");
-				}
-				if(smem_col_cnt % 16 != 0) {
-					throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR: smem_col_cnt(" + std::to_string(smem_col_cnt) + ") % 16 should be equal to 0");
-				}
-				CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_VT_half, n * f * sizeof(d_VT_half[0])));
-				float2half_array<<<(n*f-1)/1024 + 1, 1024>>>(d_VT, d_VT_half, f*n);
-				// void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt)
-				calculate_vtvs_smem_row_major_tensor<<<m, (f * f / 16 / 16) * 32, smem_size>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
-						train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT_half, smem_col_cnt
-				);
-				//void regularize_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda) {
-				regularize_vtvs<<<m, f>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
-						train_ratings.d_csr_coo_col_idxs, lambda, f
-				);
-				CUDA_CHECK(cudaFree(d_VT_half));
-				break;
-			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC:
-				if(f % 16 != 0) {
-					throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR_SYMMETRIC: f(" + std::to_string(f) + ") % 16 should be equal to 0");
-				}
-				if(smem_col_cnt % 16 != 0) {
-					throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR_SYMMETRIC: smem_col_cnt(" + std::to_string(smem_col_cnt) + ") % 16 should be equal to 0");
-				}
-				CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_VT_half, n * f * sizeof(d_VT_half[0])));
-				float2half_array<<<(n*f-1)/1024 + 1, 1024>>>(d_VT, d_VT_half, f*n);
-
-				symmetric_tiles_cnt = (f / 16) * (f / 16 + 1) / 2;
-
-#ifdef USE_LOGGER
-				g_logger.log("vtvs symmetric_tiles_cnt=" + std::to_string(symmetric_tiles_cnt), true);
-#endif
-
-				// void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt)
-				calculate_vtvs_smem_row_major_tensor_symmetric<<<m, symmetric_tiles_cnt * 32, smem_size>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
-						train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT_half, smem_col_cnt
-				);
-				//void regularize_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda) {
-				regularize_vtvs<<<m, f>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
-						train_ratings.d_csr_coo_col_idxs, lambda, f
-				);
-				CUDA_CHECK(cudaFree(d_VT_half));
-				break;
-			case CALCULATE_VVTS_TYPE::SIMPLE:
-			default:
-				// void calculate_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT) {
-				calculate_vtvs<<<m, f>>>(d_vtvs, train_ratings.d_csr_row_ptrs,
-						train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT
-				);
-			}
-			CUDA_CHECK(cudaPeekAtLastError());
+				CUDA_CHECK(cudaPeekAtLastError());
 
 #if defined (DEBUG) || defined(USE_LOGGER)
-			CUDA_CHECK(cudaDeviceSynchronize());
+				CUDA_CHECK(cudaDeviceSynchronize());
 #endif
 
 #ifdef USE_LOGGER
-			g_logger.log("vtvs calculation done type=" + to_string(calculate_vvts_type), true);
+				g_logger.log("vtvs calculation done type=" + to_string(calculate_vvts_type) + " m_batch=" + std::to_string(m_batch), true);
 #endif
 
-			// TODO: single array of max(m, n) allocated in model constructor
+				// TODO: single array of max(m, n) allocated in model constructor
 
-			// host array of pointers to each device vtv
-			float **h_d_vtvs_ptrs;
+				// host array of pointers to each device vtv
+				float **h_d_vtvs_ptrs;
 
-			CUDA_CHECK(cudaMallocHost((void **)&h_d_vtvs_ptrs, m * sizeof(h_d_vtvs_ptrs[0])));
+				CUDA_CHECK(cudaMallocHost((void **)&h_d_vtvs_ptrs, m_batch_size * sizeof(h_d_vtvs_ptrs[0])));
 
-			for(size_t i = 0; i < m; ++i) {
-				h_d_vtvs_ptrs[i] = &d_vtvs[i * f * f];
-			}
+				for(size_t i = 0; i < m_batch_size; ++i) {
+					h_d_vtvs_ptrs[i] = &d_xtxs[i * f * f];
+				}
 
-			// device array of pointers to each device vtv
-			float **d_d_vtvs_ptrs;
+				// device array of pointers to each device vtv
+				float **d_d_vtvs_ptrs;
 
-			CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_vtvs_ptrs, m * sizeof(d_d_vtvs_ptrs[0])));
-			CUDA_CHECK(cudaMemcpy(d_d_vtvs_ptrs, h_d_vtvs_ptrs, m * sizeof(h_d_vtvs_ptrs[0]), cudaMemcpyHostToDevice));
+				CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_vtvs_ptrs, m_batch_size * sizeof(d_d_vtvs_ptrs[0])));
+				CUDA_CHECK(cudaMemcpy(d_d_vtvs_ptrs, h_d_vtvs_ptrs, m_batch_size * sizeof(h_d_vtvs_ptrs[0]), cudaMemcpyHostToDevice));
 
-			// required by cublasSgetrfBatched but not used for now
-			int *d_getrf_infos;
+				// required by cublasSgetrfBatched but not used for now
+				int *d_getrf_infos;
 
-			CUDA_CHECK(CUDA_MALLOC_DEVICE(&d_getrf_infos, m * sizeof(d_getrf_infos[0])));
+				CUDA_CHECK(CUDA_MALLOC_DEVICE(&d_getrf_infos, m_batch_size * sizeof(d_getrf_infos[0])));
 
-			// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
-			CUBLAS_CHECK(cublasSgetrfBatched(cublas_handle, f, d_d_vtvs_ptrs, f, NULL, d_getrf_infos, m));
+				// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
+				CUBLAS_CHECK(cublasSgetrfBatched(cublas_handle, f, d_d_vtvs_ptrs, f, NULL, d_getrf_infos, m_batch_size));
 
 #if defined (DEBUG) || defined(USE_LOGGER)
-			CUDA_CHECK(cudaDeviceSynchronize());
+				CUDA_CHECK(cudaDeviceSynchronize());
 #endif
 
 #ifdef USE_LOGGER
-			g_logger.log("vtvs batched LU factorization done", true);
+				g_logger.log("vtvs batched LU factorization done m_batch=" + std::to_string(m_batch), true);
 #endif
 
-			int getrs_info;
+				int getrs_info;
 
-			// host array of pointers to each device VTRT column
-			float **h_d_VTRT_ptrs;
+				// host array of pointers to each device VTRT column
+				float **h_d_VTRT_ptrs;
 
-			CUDA_CHECK(cudaMallocHost((void **)&h_d_VTRT_ptrs, m * sizeof(h_d_VTRT_ptrs[0])));
+				CUDA_CHECK(cudaMallocHost((void **)&h_d_VTRT_ptrs, m_batch_size * sizeof(h_d_VTRT_ptrs[0])));
 
-			for(size_t i = 0; i < m; ++i) {
-				h_d_VTRT_ptrs[i] = &d_VTRT[i * f];
-			}
+				for(size_t i = 0; i < m_batch_size; ++i) {
+					h_d_VTRT_ptrs[i] = &d_VTRT[(m_batch_offset + i) * f];
+				}
 
-			// device array of pointers to each device VTRT column
-			float **d_d_VTRT_ptrs;
+				// device array of pointers to each device VTRT column
+				float **d_d_VTRT_ptrs;
 
-			CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_VTRT_ptrs, m * sizeof(d_d_VTRT_ptrs[0])));
-			CUDA_CHECK(cudaMemcpy(d_d_VTRT_ptrs, h_d_VTRT_ptrs, m * sizeof(h_d_VTRT_ptrs[0]), cudaMemcpyHostToDevice));
+				CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_VTRT_ptrs, m_batch_size * sizeof(d_d_VTRT_ptrs[0])));
+				CUDA_CHECK(cudaMemcpy(d_d_VTRT_ptrs, h_d_VTRT_ptrs, m_batch_size * sizeof(h_d_VTRT_ptrs[0]), cudaMemcpyHostToDevice));
 
-			// d_VTRT gets overwritten by result (VT)
-			// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
-			CUBLAS_CHECK(cublasSgetrsBatched(
-					cublas_handle,
-					CUBLAS_OP_N,
-					f,
-					1,
-					(const float * const *)d_d_vtvs_ptrs,
-					f,
-					nullptr,
-					(float * const *)d_d_VTRT_ptrs,
-					f,
-					&getrs_info,
-					m
-			));
+				// d_VTRT gets overwritten by result (VT)
+				// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
+				CUBLAS_CHECK(cublasSgetrsBatched(
+						cublas_handle,
+						CUBLAS_OP_N,
+						f,
+						1,
+						(const float * const *)d_d_vtvs_ptrs,
+						f,
+						nullptr,
+						(float * const *)d_d_VTRT_ptrs,
+						f,
+						&getrs_info,
+						m_batch_size
+				));
 
 #if defined (DEBUG) || defined(USE_LOGGER)
-			CUDA_CHECK(cudaDeviceSynchronize());
+				CUDA_CHECK(cudaDeviceSynchronize());
 #endif
+
+				// write result
+				CUDA_CHECK(cudaMemcpy(d_UT + f * m_batch_offset, d_VTRT + f * m_batch_offset, m_batch_size * f * sizeof(d_VTRT[0]), cudaMemcpyDeviceToDevice));
 
 #ifdef USE_LOGGER
-			g_logger.log("U batched solve done", true);
+				g_logger.log("U batched solve done m_batch=" + std::to_string(m_batch), true);
 #endif
 
-			// write result
-			CUDA_CHECK(cudaMemcpy(d_UT, d_VTRT, m * f * sizeof(d_VTRT[0]), cudaMemcpyDeviceToDevice));
+				switch (calculate_vvts_type) {
+				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR:
+				case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR:
+				case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
+					CUDA_CHECK(cudaMemset(d_xtxs, 0, f * f * m_batch_size * sizeof(d_xtxs[0])));
+				}
 
-			CUDA_CHECK(cudaFreeHost(h_d_vtvs_ptrs));
-			CUDA_CHECK(cudaFree(d_d_vtvs_ptrs));
-			CUDA_CHECK(cudaFree(d_getrf_infos));
-			CUDA_CHECK(cudaFreeHost(h_d_VTRT_ptrs));
-			CUDA_CHECK(cudaFree(d_d_VTRT_ptrs));
+				CUDA_CHECK(cudaFreeHost(h_d_vtvs_ptrs));
+				CUDA_CHECK(cudaFree(d_d_vtvs_ptrs));
+				CUDA_CHECK(cudaFree(d_getrf_infos));
+				CUDA_CHECK(cudaFreeHost(h_d_VTRT_ptrs));
+				CUDA_CHECK(cudaFree(d_d_VTRT_ptrs));
+			}	// m_batch loop
+
+			CUDA_CHECK(cudaFree(d_VT_half));
 
 #ifdef USE_LOGGER
 			g_logger.event_finished(logger::EVENT_TYPE::ALS_UPDATE_U, true);
@@ -991,7 +998,7 @@ void als_model::train() {
 			CUDA_CHECK(cudaFree(d_RTU));
 
 #ifdef USE_LOGGER
-			g_logger.log("d_UTR via cuSPARSE and cuBLAS done", true);
+			g_logger.log("UTR via cuSPARSE and cuBLAS done", true);
 #endif
 
 #ifdef USE_LOGGER
@@ -1021,184 +1028,196 @@ void als_model::train() {
 			}
 
 			switch (calculate_vvts_type) {
-			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR:
-				// void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
-				calculate_vtvs_smem_row_major<<<n, f, smem_size>>>(d_utus, train_ratings.d_csc_col_ptrs,
-						train_ratings.d_csc_row_idxs, lambda, n, f, d_UT, smem_col_cnt
-				);
-				break;
-			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_NO_CALC:
-				// void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
-				calculate_vtvs_smem_row_major_no_calc<<<n, f, smem_size>>>(d_utus, train_ratings.d_csc_col_ptrs,
-						train_ratings.d_csc_row_idxs, lambda, n, f, d_UT, smem_col_cnt
-				);
-				break;
-			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR:
-				if(f < smem_col_cnt) {
-					throw std::runtime_error("SMEM_COL_MAJOR: f(" + std::to_string(f) + ") should be greater than or equal to smem_col_cnt("
-							+ std::to_string(smem_col_cnt) + ")"
-					);
-				}
-				// void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
-				calculate_vtvs_smem_col_major<<<n, f, smem_size>>>(d_utus, train_ratings.d_csc_col_ptrs,
-						train_ratings.d_csc_row_idxs, lambda, n, f, d_UT, smem_col_cnt
-				);
-				break;
-			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
-				if(f < smem_col_cnt * 2) {
-					throw std::runtime_error("SMEM_COL_MAJOR_TWO_THREADS: f(" + std::to_string(f) + ") should be greater than or equal to smem_col_cnt * 2 ("
-							+ std::to_string(smem_col_cnt) + " * 2 = " + std::to_string(smem_col_cnt * 2) + ")"
-					);
-				}
-				// void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT, int smem_col_cnt) {
-				calculate_vtvs_smem_col_major_two_threads<<<n, f, smem_size>>>(d_utus, train_ratings.d_csc_col_ptrs,
-						train_ratings.d_csc_row_idxs, lambda, n, f, d_UT, smem_col_cnt
-				);
-				break;
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR:
-				if(f % 16 != 0) {
-					throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR: f(" + std::to_string(f) + ") % 16 should be equal to 0");
-				}
-				if(smem_col_cnt % 16 != 0) {
-					throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR: smem_col_cnt(" + std::to_string(smem_col_cnt) + ") % 16 should be equal to 0");
-				}
-				CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_UT_half, m * f * sizeof(d_UT_half[0])));
-				float2half_array<<<(m*f-1)/1024 + 1, 1024>>>(d_UT, d_UT_half, f*m);
-				// void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt)
-				calculate_vtvs_smem_row_major_tensor<<<n, (f * f / 16 / 16) * 32, smem_size>>>(d_utus, train_ratings.d_csc_col_ptrs,
-						train_ratings.d_csc_row_idxs, lambda, n, f, d_UT_half, smem_col_cnt
-				);
-				//void regularize_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda) {
-				regularize_vtvs<<<m, f>>>(d_utus, train_ratings.d_csc_col_ptrs,
-						train_ratings.d_csc_row_idxs, lambda, f
-				);
-				CUDA_CHECK(cudaFree(d_UT_half));
-				break;
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC:
-				if(f % 16 != 0) {
-					throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR_SYMMETRIC: f(" + std::to_string(f) + ") % 16 should be equal to 0");
-				}
-				if(smem_col_cnt % 16 != 0) {
-					throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR_SYMMETRIC: smem_col_cnt(" + std::to_string(smem_col_cnt) + ") % 16 should be equal to 0");
-				}
 				CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_UT_half, m * f * sizeof(d_UT_half[0])));
 				float2half_array<<<(m*f-1)/1024 + 1, 1024>>>(d_UT, d_UT_half, f*m);
-
-				symmetric_tiles_cnt = (f / 16) * (f / 16 + 1) / 2;
-
-				// void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt)
-				calculate_vtvs_smem_row_major_tensor_symmetric<<<n, symmetric_tiles_cnt * 32, smem_size>>>(d_utus, train_ratings.d_csc_col_ptrs,
-						train_ratings.d_csc_row_idxs, lambda, n, f, d_UT_half, smem_col_cnt
-				);
-				//void regularize_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda) {
-				regularize_vtvs<<<m, f>>>(d_utus, train_ratings.d_csc_col_ptrs,
-						train_ratings.d_csc_row_idxs, lambda, f
-				);
-				CUDA_CHECK(cudaFree(d_UT_half));
-				break;
-			case CALCULATE_VVTS_TYPE::SIMPLE:
-			default:
-				// void calculate_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, float *VT) {
-				calculate_vtvs<<<n, f>>>(d_utus, train_ratings.d_csc_col_ptrs,
-						train_ratings.d_csc_row_idxs, lambda, n, f, d_UT
-				);
 			}
 
-			CUDA_CHECK(cudaPeekAtLastError());
+			for(int n_batch = 0; n_batch < n_batches; ++n_batch) {
+				int n_first_batch_size = (n - 1) / n_batches + 1;
+
+				int n_batch_size = n_first_batch_size * (n_batch + 1) < n ? n_first_batch_size : n - n_first_batch_size * n_batch;
+
+				int n_batch_offset = n_batch * n_first_batch_size;
+
+				switch (calculate_vvts_type) {
+				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR:
+					calculate_vtvs_smem_row_major<<<n_batch_size, f, smem_size>>>(d_xtxs, train_ratings.d_csc_col_ptrs,
+							train_ratings.d_csc_row_idxs, lambda, n, f, d_UT, smem_col_cnt, n_batch_offset
+					);
+					break;
+				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_NO_CALC:
+					calculate_vtvs_smem_row_major_no_calc<<<n_batch_size, f, smem_size>>>(d_xtxs, train_ratings.d_csc_col_ptrs,
+							train_ratings.d_csc_row_idxs, lambda, n, f, d_UT, smem_col_cnt, n_batch_offset
+					);
+					break;
+				case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR:
+					if(f < smem_col_cnt) {
+						throw std::runtime_error("SMEM_COL_MAJOR: f(" + std::to_string(f) + ") should be greater than or equal to smem_col_cnt("
+								+ std::to_string(smem_col_cnt) + ")"
+						);
+					}
+					calculate_vtvs_smem_col_major<<<n_batch_size, f, smem_size>>>(d_xtxs, train_ratings.d_csc_col_ptrs,
+							train_ratings.d_csc_row_idxs, lambda, n, f, d_UT, smem_col_cnt, n_batch_offset
+					);
+					break;
+				case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
+					if(f < smem_col_cnt * 2) {
+						throw std::runtime_error("SMEM_COL_MAJOR_TWO_THREADS: f(" + std::to_string(f) + ") should be greater than or equal to smem_col_cnt * 2 ("
+								+ std::to_string(smem_col_cnt) + " * 2 = " + std::to_string(smem_col_cnt * 2) + ")"
+						);
+					}
+					calculate_vtvs_smem_col_major_two_threads<<<n_batch_size, f, smem_size>>>(d_xtxs, train_ratings.d_csc_col_ptrs,
+							train_ratings.d_csc_row_idxs, lambda, n, f, d_UT, smem_col_cnt, n_batch_offset
+					);
+					break;
+				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR:
+					if(f % 16 != 0) {
+						throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR: f(" + std::to_string(f) + ") % 16 should be equal to 0");
+					}
+					if(smem_col_cnt % 16 != 0) {
+						throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR: smem_col_cnt(" + std::to_string(smem_col_cnt) + ") % 16 should be equal to 0");
+					}
+					calculate_vtvs_smem_row_major_tensor<<<n_batch_size, (f * f / 16 / 16) * 32, smem_size>>>(d_xtxs, train_ratings.d_csc_col_ptrs,
+							train_ratings.d_csc_row_idxs, lambda, n, f, d_UT_half, smem_col_cnt, n_batch_offset
+					);
+					regularize_vtvs<<<n_batch_size, f>>>(d_xtxs, train_ratings.d_csc_col_ptrs,
+							train_ratings.d_csc_row_idxs, lambda, f, n_batch_offset
+					);
+					break;
+				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC:
+					if(f % 16 != 0) {
+						throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR_SYMMETRIC: f(" + std::to_string(f) + ") % 16 should be equal to 0");
+					}
+					if(smem_col_cnt % 16 != 0) {
+						throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR_SYMMETRIC: smem_col_cnt(" + std::to_string(smem_col_cnt) + ") % 16 should be equal to 0");
+					}
+
+					symmetric_tiles_cnt = (f / 16) * (f / 16 + 1) / 2;
+
+#ifdef USE_LOGGER
+					g_logger.log("utus symmetric_tiles_cnt=" + std::to_string(symmetric_tiles_cnt) + " n_batch=" + std::to_string(n_batch), true);
+#endif
+
+					calculate_vtvs_smem_row_major_tensor_symmetric<<<n_batch_size, symmetric_tiles_cnt * 32, smem_size>>>(d_xtxs, train_ratings.d_csc_col_ptrs,
+							train_ratings.d_csc_row_idxs, lambda, n, f, d_UT_half, smem_col_cnt, n_batch_offset
+					);
+					regularize_vtvs<<<n_batch_size, f>>>(d_xtxs, train_ratings.d_csc_col_ptrs,
+							train_ratings.d_csc_row_idxs, lambda, f, n_batch_offset
+					);
+					break;
+				case CALCULATE_VVTS_TYPE::SIMPLE:
+				default:
+					calculate_vtvs<<<n_batch_size, f>>>(d_xtxs, train_ratings.d_csc_col_ptrs,
+							train_ratings.d_csc_row_idxs, lambda, n, f, d_UT, n_batch_offset
+					);
+				}
+
+				CUDA_CHECK(cudaPeekAtLastError());
 
 #if defined (DEBUG) || defined(USE_LOGGER)
-			CUDA_CHECK(cudaDeviceSynchronize());
+				CUDA_CHECK(cudaDeviceSynchronize());
 #endif
 
 #ifdef USE_LOGGER
-			g_logger.log("utus calculation done type=" + to_string(calculate_vvts_type), true);
+				g_logger.log("utus calculation done type=" + to_string(calculate_vvts_type) + " n_batch=" + std::to_string(n_batch), true);
 #endif
 
-			// TODO: single array of max(m, n) allocated in model constructor
+				// TODO: single array of max(m, n) allocated in model constructor
 
-			// host array of pointers to each device utu
-			float **h_d_utus_ptrs;
+				// host array of pointers to each device utu
+				float **h_d_utus_ptrs;
 
-			CUDA_CHECK(cudaMallocHost((void **)&h_d_utus_ptrs, n * sizeof(h_d_utus_ptrs[0])));
+				CUDA_CHECK(cudaMallocHost((void **)&h_d_utus_ptrs, n_batch_size * sizeof(h_d_utus_ptrs[0])));
 
-			for(size_t i = 0; i < n; ++i) {
-				h_d_utus_ptrs[i] = &d_utus[i * f * f];
-			}
+				for(size_t i = 0; i < n_batch_size; ++i) {
+					h_d_utus_ptrs[i] = &d_xtxs[i * f * f];
+				}
 
-			// device array of pointers to each device utu
-			float **d_d_utus_ptrs;
+				// device array of pointers to each device utu
+				float **d_d_utus_ptrs;
 
-			CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_utus_ptrs, n * sizeof(d_d_utus_ptrs[0])));
-			CUDA_CHECK(cudaMemcpy(d_d_utus_ptrs, h_d_utus_ptrs, n * sizeof(h_d_utus_ptrs[0]), cudaMemcpyHostToDevice));
+				CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_utus_ptrs, n_batch_size * sizeof(d_d_utus_ptrs[0])));
+				CUDA_CHECK(cudaMemcpy(d_d_utus_ptrs, h_d_utus_ptrs, n_batch_size * sizeof(h_d_utus_ptrs[0]), cudaMemcpyHostToDevice));
 
-			// required by cublasSgetrfBatched but not used for now
-			int *d_getrf_infos;
+				// required by cublasSgetrfBatched but not used for now
+				int *d_getrf_infos;
 
-			CUDA_CHECK(CUDA_MALLOC_DEVICE(&d_getrf_infos, n * sizeof(d_getrf_infos[0])));
+				CUDA_CHECK(CUDA_MALLOC_DEVICE(&d_getrf_infos, n_batch_size * sizeof(d_getrf_infos[0])));
 
-			// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
-			CUBLAS_CHECK(cublasSgetrfBatched(cublas_handle, f, d_d_utus_ptrs, f, NULL, d_getrf_infos, n));
+				// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
+				CUBLAS_CHECK(cublasSgetrfBatched(cublas_handle, f, d_d_utus_ptrs, f, NULL, d_getrf_infos, n_batch_size));
 
 #if defined (DEBUG) || defined(USE_LOGGER)
-			CUDA_CHECK(cudaDeviceSynchronize());
+				CUDA_CHECK(cudaDeviceSynchronize());
 #endif
 
 #ifdef USE_LOGGER
-			g_logger.log("utus batched LU factorization done", true);
+				g_logger.log("utus batched LU factorization done n_batch=" + std::to_string(n_batch), true);
 #endif
 
-			int getrs_info;
+				int getrs_info;
 
-			// host array of pointers to each device UTR column
-			float **h_d_UTR_ptrs;
+				// host array of pointers to each device UTR column
+				float **h_d_UTR_ptrs;
 
-			CUDA_CHECK(cudaMallocHost((void **)&h_d_UTR_ptrs, n * sizeof(h_d_UTR_ptrs[0])));
+				CUDA_CHECK(cudaMallocHost((void **)&h_d_UTR_ptrs, n_batch_size * sizeof(h_d_UTR_ptrs[0])));
 
-			for(size_t i = 0; i < n; ++i) {
-				h_d_UTR_ptrs[i] = &d_UTR[i * f];
-			}
+				for(size_t i = 0; i < n_batch_size; ++i) {
+					h_d_UTR_ptrs[i] = &d_UTR[(n_batch_offset + i) * f];
+				}
 
-			// device array of pointers to each device UTR column
-			float **d_d_UTR_ptrs;
+				// device array of pointers to each device UTR column
+				float **d_d_UTR_ptrs;
 
-			CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_UTR_ptrs, n * sizeof(d_d_utus_ptrs[0])));
-			CUDA_CHECK(cudaMemcpy(d_d_UTR_ptrs, h_d_UTR_ptrs, n * sizeof(h_d_UTR_ptrs[0]), cudaMemcpyHostToDevice));
+				CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_UTR_ptrs, n_batch_size * sizeof(d_d_utus_ptrs[0])));
+				CUDA_CHECK(cudaMemcpy(d_d_UTR_ptrs, h_d_UTR_ptrs, n_batch_size * sizeof(h_d_UTR_ptrs[0]), cudaMemcpyHostToDevice));
 
-			// d_UTR gets overwritten by result (UT)
-			// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
-			CUBLAS_CHECK(cublasSgetrsBatched(
-					cublas_handle,
-					CUBLAS_OP_N,
-					f,
-					1,
-					(const float * const *)d_d_utus_ptrs,
-					f,
-					nullptr,
-					(float * const *)d_d_UTR_ptrs,
-					f,
-					&getrs_info,
-					n
-			));
+				// d_UTR gets overwritten by result (UT)
+				// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
+				CUBLAS_CHECK(cublasSgetrsBatched(
+						cublas_handle,
+						CUBLAS_OP_N,
+						f,
+						1,
+						(const float * const *)d_d_utus_ptrs,
+						f,
+						nullptr,
+						(float * const *)d_d_UTR_ptrs,
+						f,
+						&getrs_info,
+						n_batch_size
+				));
 
 #if defined (DEBUG) || defined(USE_LOGGER)
-			CUDA_CHECK(cudaDeviceSynchronize());
+				CUDA_CHECK(cudaDeviceSynchronize());
 #endif
 
+				// write result
+				CUDA_CHECK(cudaMemcpy(d_VT + f * n_batch_offset, d_UTR + f * n_batch_offset, n_batch_size * f * sizeof(d_UTR[0]), cudaMemcpyDeviceToDevice));
+
 #ifdef USE_LOGGER
-			g_logger.log("V batched solve done", true);
+				g_logger.log("V batched solve done n_batch=" + std::to_string(n_batch), true);
 #endif
 
-			// write result
-			CUDA_CHECK(cudaMemcpy(d_VT, d_UTR, n * f * sizeof(d_UTR[0]), cudaMemcpyDeviceToDevice));
+				switch (calculate_vvts_type) {
+				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR:
+				case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR:
+				case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
+					CUDA_CHECK(cudaMemset(d_xtxs, 0, f * f * n_batch_size * sizeof(d_xtxs[0])));
+				}
 
-			CUDA_CHECK(cudaFreeHost(h_d_utus_ptrs));
-			CUDA_CHECK(cudaFree(d_d_utus_ptrs));
-			CUDA_CHECK(cudaFree(d_getrf_infos));
-			CUDA_CHECK(cudaFreeHost(h_d_UTR_ptrs));
-			CUDA_CHECK(cudaFree(d_d_UTR_ptrs));
+				CUDA_CHECK(cudaFreeHost(h_d_utus_ptrs));
+				CUDA_CHECK(cudaFree(d_d_utus_ptrs));
+				CUDA_CHECK(cudaFree(d_getrf_infos));
+				CUDA_CHECK(cudaFreeHost(h_d_UTR_ptrs));
+				CUDA_CHECK(cudaFree(d_d_UTR_ptrs));
+			}	// n_batch loop
+
+			CUDA_CHECK(cudaFree(d_UT_half));
 
 #ifdef USE_LOGGER
-			//g_logger.log("update V done", true);
 			g_logger.event_finished(logger::EVENT_TYPE::ALS_UPDATE_V, true);
 #endif
 
@@ -1211,7 +1230,6 @@ void als_model::train() {
 
 		CUDA_CHECK(cudaMemset(d_err_arr, 0, err_size * sizeof(float)));
 
-		//void calculate_square_error(float *coo_vals, int *coo_row_idxs, coo_col_idxs, int val_cnt, float *UT, float *VT, int f, float *err_arr, int err_size) {
 		calculate_square_error<<<(train_ratings.val_cnt - 1) / 256 + 1, 256>>>(train_ratings.d_csr_coo_vals, train_ratings.d_coo_row_idxs,
 				train_ratings.d_csr_coo_col_idxs, train_ratings.val_cnt, d_UT, d_VT, f, d_err_arr, err_size
 		);
@@ -1228,7 +1246,6 @@ void als_model::train() {
 
 		CUDA_CHECK(cudaMemset(d_err_arr, 0, err_size * sizeof(float)));
 
-		//void calculate_square_error(float *coo_vals, int *coo_row_idxs, coo_col_idxs, int val_cnt, float *UT, float *VT, int f, float *err_arr, int err_size) {
 		calculate_square_error<<<(test_ratings.val_cnt - 1) / 256 + 1, 256>>>(test_ratings.d_csr_coo_vals, test_ratings.d_coo_row_idxs,
 				test_ratings.d_csr_coo_col_idxs, test_ratings.val_cnt, d_UT, d_VT, f, d_err_arr, err_size
 		);

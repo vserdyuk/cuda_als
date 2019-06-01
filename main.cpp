@@ -38,8 +38,11 @@ int main(int argc, char **argv) {
 	int smem_col_cnt = 32;	// shoud be calculated based on device shared memory sized
 	//int smem_col_cnt = 112;	// shoud be calculated based on device shared memory size
 
+	int m_batches = atoi(argv[11]);
+	int n_batches = atoi(argv[12]);
+
 #ifdef USE_LOGGER
-	std::string log_folder = argv[11];
+	std::string log_folder = argv[13];
 
 	std::cout << std::fixed;
 
@@ -65,7 +68,7 @@ int main(int argc, char **argv) {
 
 	test_ratings.load_coo(data_folder + "/R_test_coo.data.bin", data_folder + "/R_test_coo.row.bin", data_folder + "/R_test_coo.col.bin");
 
-	als_model model(train_ratings, test_ratings, f, lambda, als_iters, als_calculate_vvts_type, smem_col_cnt);
+	als_model model(train_ratings, test_ratings, f, lambda, als_iters, als_calculate_vvts_type, smem_col_cnt, m_batches, n_batches);
 
 #ifdef USE_LOGGER
 	g_logger.log("als model constructor done", true);
