@@ -9,8 +9,25 @@
 			<property name="suppressHeaders" value="false"/>
 		</connection>
 	</data-source>
-	<data-source id="sqlite_jdbc-16ae505f3ea-2fb14a5202cae4b2" provider="generic" driver="sqlite_jdbc" name="SQLite - log.db" save-password="true" read-only="false">
+	<data-source id="sqlite_jdbc-16ae505f3ea-2fb14a5202cae4b2" provider="generic" driver="sqlite_jdbc" name="SQLite - cuda_als log.db" save-password="true" read-only="false">
 		<connection server="" database="/home/vladimir/src/cuda_als/log_db/log.db" url="jdbc:sqlite:/home/vladimir/src/cuda_als/log_db/log.db" type="dev"/>
+		<virtual-meta-data>
+			<container name="model">
+				<entity name="ml10M_log">
+					<constraint name="PRIMARY" type="VIRTUAL PRIMARY KEY">
+						<attribute name="log_name"/>
+						<attribute name="id"/>
+						<attribute name="run_iter"/>
+						<attribute name="als_iter"/>
+						<attribute name="prev_ts"/>
+						<attribute name="curr_ts"/>
+						<attribute name="elapsed"/>
+						<attribute name="event_elapsed"/>
+						<attribute name="text"/>
+					</constraint>
+				</entity>
+			</container>
+		</virtual-meta-data>
 	</data-source>
 	<data-source id="csvjdbc-16ae56626eb-348747c630ff669d" provider="generic" driver="csvjdbc" name="Flat files - ml10M" save-password="true" read-only="false">
 		<connection server="" database="/home/vladimir/src/cuda_als/log/ml10M" url="jdbc:relique:csv:/home/vladimir/src/cuda_als/log/ml10M" type="dev">
@@ -23,6 +40,18 @@
 	</data-source>
 	<data-source id="csvjdbc-16affcb685e-72d6588fc74741d9" provider="generic" driver="csvjdbc" name="Flat files - ml-latest" save-password="true" read-only="false">
 		<connection server="" database="/home/vladimir/src/cuda_als/log/ml-latest" url="jdbc:relique:csv:/home/vladimir/src/cuda_als/log/ml-latest" type="dev"/>
+	</data-source>
+	<data-source id="csvjdbc-16b0e3edb29-2d598fea48a955ae" provider="generic" driver="csvjdbc" name="Flat files - ml-10M100K" save-password="true" read-only="false">
+		<connection server="" database="/home/vladimir/src/cuda_als/data/ml10M/ml-10M100K" url="jdbc:relique:csv:/home/vladimir/src/cuda_als/data/ml10M/ml-10M100K" type="dev">
+			<property name="quotechar" value="&quot;"/>
+			<property name="charset" value="UTF-8"/>
+			<property name="fileExtension" value=".dat"/>
+			<property name="separator" value="::"/>
+			<property name="suppressHeaders" value="true"/>
+		</connection>
+	</data-source>
+	<data-source id="csvjdbc-16b14a2822b-3ffea5bf9b087103" provider="generic" driver="csvjdbc" name="Flat files - netflix" save-password="true" read-only="false">
+		<connection server="" database="/home/vladimir/src/cuda_als/log/netflix" url="jdbc:relique:csv:/home/vladimir/src/cuda_als/log/netflix" type="dev"/>
 	</data-source>
 	<filters/>
 </data-sources>
