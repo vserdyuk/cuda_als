@@ -3,9 +3,6 @@
 
 #include <string>
 #include <sstream>
-#include <ctime>
-
-#include <sys/time.h>
 
 struct logger {
 	enum class EVENT_TYPE {
