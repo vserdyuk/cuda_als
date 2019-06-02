@@ -1241,7 +1241,7 @@ void als_model::train() {
 		CUDA_CHECK(cudaDeviceSynchronize());
 
 #ifdef USE_LOGGER
-		g_logger.log("train root-mean-square error: " + std::to_string(sqrt(square_err_train) / train_ratings.val_cnt), true);
+		g_logger.log("train root-mean-square error: " + std::to_string(sqrt(square_err_train / train_ratings.val_cnt)), true);
 #endif
 
 		CUDA_CHECK(cudaMemset(d_err_arr, 0, err_size * sizeof(float)));
@@ -1257,7 +1257,7 @@ void als_model::train() {
 		CUDA_CHECK(cudaDeviceSynchronize());
 
 #ifdef USE_LOGGER
-		g_logger.log("test root-mean-square error: " + std::to_string(sqrt(square_err_test) / test_ratings.val_cnt), true);
+		g_logger.log("test root-mean-square error: " + std::to_string(sqrt(square_err_test / test_ratings.val_cnt)), true);
 		g_logger.event_finished(logger::EVENT_TYPE::ALS_ITER, true);
 #endif
 
