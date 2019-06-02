@@ -549,10 +549,10 @@ void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_pt
 
 	// store
 
-	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + tile_row * 16 * f + tile_col * 16, acc_frag, f, wmma::mem_row_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + tile_col * 16 * f + tile_row * 16, acc_frag, f, wmma::mem_col_major);
 
 	if(tile_row != tile_col) {
-		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + tile_col * 16 * f + tile_row * 16, acc_frag, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + tile_row * 16 * f + tile_col * 16, acc_frag, f, wmma::mem_row_major);
 	}
 }
 
