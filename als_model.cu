@@ -615,6 +615,13 @@ als_model::als_model(cuda_sparse_matrix &train_ratings, cuda_sparse_matrix &test
 
 	CUSPARSE_CHECK(cusparseCreate(&cusparse_handle));
 	CUBLAS_CHECK(cublasCreate_v2(&cublas_handle));
+
+	switch (calculate_vvts_type) {
+	case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR:
+	case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR:
+	case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
+		CUDA_CHECK(cudaMemset(d_xtxs, 0, f * f * m_first_batch_size * sizeof(d_xtxs[0])));
+	}
 }
 
 als_model::~als_model() {
