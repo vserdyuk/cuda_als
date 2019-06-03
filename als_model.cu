@@ -669,6 +669,818 @@ void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_pt
 	}
 }
 
+// does not work, too many registers for one warp
+// need to split into two warps
+
+__global__
+void calculate_vtvs_smem_row_major_tensor_symmetric_mult_frag_f96(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt, int m_batch_offset) {
+	extern __shared__ half smem_half [];
+
+	//const unsigned int warp_id = threadIdx.x / 32;
+
+	wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::col_major> vt_frag;	// actually col-major
+	wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> v_frag;	// vt interpreted as row-major -> vt transposed -> v
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag;
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag0_0;		// tile_row = 0, tile_col = 0
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag1_0;		// tile_row = 1, tile_col = 0
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag2_0;		// tile_row = 2, tile_col = 0
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag3_0;		// tile_row = 3, tile_col = 0
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag4_0;		// tile_row = 4, tile_col = 0
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag5_0;		// tile_row = 5, tile_col = 0
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag1_1;		// tile_row = 1, tile_col = 1
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag2_1;		// tile_row = 2, tile_col = 1
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag3_1;		// tile_row = 3, tile_col = 1
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag4_1;		// tile_row = 4, tile_col = 1
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag5_1;		// tile_row = 5, tile_col = 1
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag2_2;		// tile_row = 2, tile_col = 2
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag3_2;		// tile_row = 3, tile_col = 2
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag4_2;		// tile_row = 4, tile_col = 2
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag5_2;		// tile_row = 5, tile_col = 2
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag3_3;		// tile_row = 3, tile_col = 3
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag4_3;		// tile_row = 4, tile_col = 3
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag5_3;		// tile_row = 5, tile_col = 3
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag4_4;		// tile_row = 4, tile_col = 4
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag5_4;		// tile_row = 4, tile_col = 5
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag5_5;		// tile_row = 5, tile_col = 5
+
+
+	//wmma::fill_fragment(acc_frag, 0.0f);
+	wmma::fill_fragment(acc_frag0_0, 0.0f);
+	wmma::fill_fragment(acc_frag1_0, 0.0f);
+	wmma::fill_fragment(acc_frag2_0, 0.0f);
+	wmma::fill_fragment(acc_frag3_0, 0.0f);
+	wmma::fill_fragment(acc_frag4_0, 0.0f);
+	wmma::fill_fragment(acc_frag5_0, 0.0f);
+	wmma::fill_fragment(acc_frag1_1, 0.0f);
+	wmma::fill_fragment(acc_frag2_1, 0.0f);
+	wmma::fill_fragment(acc_frag3_1, 0.0f);
+	wmma::fill_fragment(acc_frag4_1, 0.0f);
+	wmma::fill_fragment(acc_frag5_1, 0.0f);
+	wmma::fill_fragment(acc_frag2_2, 0.0f);
+	wmma::fill_fragment(acc_frag3_2, 0.0f);
+	wmma::fill_fragment(acc_frag4_2, 0.0f);
+	wmma::fill_fragment(acc_frag5_2, 0.0f);
+	wmma::fill_fragment(acc_frag3_3, 0.0f);
+	wmma::fill_fragment(acc_frag4_3, 0.0f);
+	wmma::fill_fragment(acc_frag5_3, 0.0f);
+	wmma::fill_fragment(acc_frag4_4, 0.0f);
+	wmma::fill_fragment(acc_frag5_3, 0.0f);
+	wmma::fill_fragment(acc_frag5_5, 0.0f);
+
+	int user_idx = blockIdx.x + m_batch_offset;
+
+	int start = csr_row_ptrs[user_idx];
+	int end = csr_row_ptrs[user_idx + 1];
+
+	int items_cnt = end - start;
+
+	int smem_iters = (items_cnt - 1) / smem_col_cnt + 1;
+
+//	int tile_row = 0;
+//	int tile_col = 0;
+//
+//	int tile_dim = f / 16;	// tile_dim * tile_dim square
+//
+//	for(int col = 0; col < tile_dim; ++col) {
+//		int next_col_start = (2 * tile_dim - col) * (col + 1) / 2;
+//		if(warp_id < next_col_start) {
+//			tile_row = tile_dim + warp_id - next_col_start;
+//			tile_col = col;
+//			break;
+//		}
+//	}
+
+	for(int smem_iter = 0; smem_iter < smem_iters; ++smem_iter) {
+		int smem_items = smem_col_cnt * (smem_iter + 1) < items_cnt ? smem_col_cnt : items_cnt - smem_col_cnt * smem_iter;
+
+		// First 64(f) threads read smem_col_cnt columns, others are idle
+		if(threadIdx.x < f) {
+			int smem_col = 0;
+			while(smem_col < smem_items) {
+				smem_half[f * smem_col + threadIdx.x] = VT_half[f * csr_col_idxs[start + smem_iter * smem_col_cnt + smem_col] + threadIdx.x];
+				++smem_col;
+
+#ifdef FIND_NAN
+				if(smem_half[f * smem_col + threadIdx.x] != smem_half[f * smem_col + threadIdx.x]) {
+					printf("smem_half nan found blockIdx.x=%d threadIdx.x=%d\n", blockIdx.x, threadIdx.x);
+				}
+#endif
+
+			}
+			// if this smem_iter has less than 16 cols left
+			while(smem_col < smem_col_cnt) {
+				memset(&smem_half[f * smem_col + threadIdx.x], 0, sizeof(smem_half[0]));
+				++smem_col;
+			}
+		}
+
+		__syncthreads();
+
+		// actual work
+
+		for(int tile_iter = 0; tile_iter < smem_col_cnt / 16; ++tile_iter) {
+
+			//wmma::load_matrix_sync(vt_frag, smem_half + tile_row * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + tile_col * 16 + tile_iter * f * 16, f);
+
+			//wmma::mma_sync(acc_frag, vt_frag, v_frag, acc_frag);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+			wmma::load_matrix_sync(v_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag0_0, vt_frag, v_frag, acc_frag0_0);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag1_0, vt_frag, v_frag, acc_frag1_0);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag2_0, vt_frag, v_frag, acc_frag2_0);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag3_0, vt_frag, v_frag, acc_frag3_0);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag4_0, vt_frag, v_frag, acc_frag4_0);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag5_0, vt_frag, v_frag, acc_frag5_0);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+			wmma::load_matrix_sync(v_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag1_1, vt_frag, v_frag, acc_frag1_1);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag2_1, vt_frag, v_frag, acc_frag2_1);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag3_1, vt_frag, v_frag, acc_frag3_1);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag4_1, vt_frag, v_frag, acc_frag4_1);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag5_1, vt_frag, v_frag, acc_frag5_1);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+			wmma::load_matrix_sync(v_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag2_2, vt_frag, v_frag, acc_frag2_2);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag3_2, vt_frag, v_frag, acc_frag3_2);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag4_2, vt_frag, v_frag, acc_frag4_2);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag5_2, vt_frag, v_frag, acc_frag5_2);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+			wmma::load_matrix_sync(v_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag3_3, vt_frag, v_frag, acc_frag3_3);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag4_3, vt_frag, v_frag, acc_frag4_3);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag5_3, vt_frag, v_frag, acc_frag5_3);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+			wmma::load_matrix_sync(v_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag4_4, vt_frag, v_frag, acc_frag4_4);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag5_4, vt_frag, v_frag, acc_frag5_4);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+			wmma::load_matrix_sync(v_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag5_5, vt_frag, v_frag, acc_frag5_5);
+		}
+
+		__syncthreads();
+	}
+
+	// store
+
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + tile_col * 16 * f + tile_row * 16, acc_frag, f, wmma::mem_col_major);
+
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 0 * 16, acc_frag0_0, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 1 * 16, acc_frag1_0, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 2 * 16, acc_frag2_0, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 3 * 16, acc_frag3_0, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 4 * 16, acc_frag4_0, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 5 * 16, acc_frag5_0, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 1 * 16, acc_frag1_1, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 2 * 16, acc_frag2_1, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 3 * 16, acc_frag3_1, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 4 * 16, acc_frag4_1, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 5 * 16, acc_frag5_1, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 2 * 16, acc_frag2_2, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 3 * 16, acc_frag3_2, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 4 * 16, acc_frag4_2, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 5 * 16, acc_frag5_2, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 3 * 16, acc_frag3_3, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 4 * 16, acc_frag4_3, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 5 * 16, acc_frag5_3, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 4 * 16, acc_frag4_4, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 5 * 16, acc_frag5_4, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 5 * 16, acc_frag5_5, f, wmma::mem_col_major);
+
+	//if(tile_row != tile_col) {
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + tile_row * 16 * f + tile_col * 16, acc_frag, f, wmma::mem_row_major);
+
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 0 * 16, acc_frag0_0, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 0 * 16, acc_frag1_0, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 0 * 16, acc_frag2_0, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 0 * 16, acc_frag3_0, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 0 * 16, acc_frag4_0, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 0 * 16, acc_frag5_0, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 1 * 16, acc_frag1_1, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 1 * 16, acc_frag2_1, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 1 * 16, acc_frag3_1, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 1 * 16, acc_frag4_1, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 1 * 16, acc_frag5_1, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 2 * 16, acc_frag2_2, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 2 * 16, acc_frag3_2, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 2 * 16, acc_frag4_2, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 2 * 16, acc_frag5_2, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 3 * 16, acc_frag3_3, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 3 * 16, acc_frag4_3, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 3 * 16, acc_frag5_3, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 4 * 16, acc_frag4_4, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 4 * 16, acc_frag5_4, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 5 * 16, acc_frag5_5, f, wmma::mem_row_major);
+//	}
+}
+
+__global__
+void calculate_vtvs_smem_row_major_tensor_symmetric_mult_frag_f80(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt, int m_batch_offset) {
+	extern __shared__ half smem_half [];
+
+	//const unsigned int warp_id = threadIdx.x / 32;
+
+	wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::col_major> vt_frag;	// actually col-major
+	wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> v_frag;	// vt interpreted as row-major -> vt transposed -> v
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag;
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag0_0;		// tile_row = 0, tile_col = 0
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag1_0;		// tile_row = 1, tile_col = 0
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag2_0;		// tile_row = 2, tile_col = 0
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag3_0;		// tile_row = 3, tile_col = 0
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag4_0;		// tile_row = 4, tile_col = 0
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag5_0;		// tile_row = 5, tile_col = 0
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag1_1;		// tile_row = 1, tile_col = 1
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag2_1;		// tile_row = 2, tile_col = 1
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag3_1;		// tile_row = 3, tile_col = 1
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag4_1;		// tile_row = 4, tile_col = 1
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag5_1;		// tile_row = 5, tile_col = 1
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag2_2;		// tile_row = 2, tile_col = 2
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag3_2;		// tile_row = 3, tile_col = 2
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag4_2;		// tile_row = 4, tile_col = 2
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag5_2;		// tile_row = 5, tile_col = 2
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag3_3;		// tile_row = 3, tile_col = 3
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag4_3;		// tile_row = 4, tile_col = 3
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag5_3;		// tile_row = 5, tile_col = 3
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag4_4;		// tile_row = 4, tile_col = 4
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag5_4;		// tile_row = 4, tile_col = 5
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag5_5;		// tile_row = 5, tile_col = 5
+
+	//wmma::fill_fragment(acc_frag, 0.0f);
+	wmma::fill_fragment(acc_frag0_0, 0.0f);
+	wmma::fill_fragment(acc_frag1_0, 0.0f);
+	wmma::fill_fragment(acc_frag2_0, 0.0f);
+	wmma::fill_fragment(acc_frag3_0, 0.0f);
+	wmma::fill_fragment(acc_frag4_0, 0.0f);
+	//wmma::fill_fragment(acc_frag5_0, 0.0f);
+	wmma::fill_fragment(acc_frag1_1, 0.0f);
+	wmma::fill_fragment(acc_frag2_1, 0.0f);
+	wmma::fill_fragment(acc_frag3_1, 0.0f);
+	wmma::fill_fragment(acc_frag4_1, 0.0f);
+	//wmma::fill_fragment(acc_frag5_1, 0.0f);
+	wmma::fill_fragment(acc_frag2_2, 0.0f);
+	wmma::fill_fragment(acc_frag3_2, 0.0f);
+	wmma::fill_fragment(acc_frag4_2, 0.0f);
+	//wmma::fill_fragment(acc_frag5_2, 0.0f);
+	wmma::fill_fragment(acc_frag3_3, 0.0f);
+	wmma::fill_fragment(acc_frag4_3, 0.0f);
+	//wmma::fill_fragment(acc_frag5_3, 0.0f);
+	wmma::fill_fragment(acc_frag4_4, 0.0f);
+	//wmma::fill_fragment(acc_frag5_3, 0.0f);
+	//wmma::fill_fragment(acc_frag5_5, 0.0f);
+
+	int user_idx = blockIdx.x + m_batch_offset;
+
+	int start = csr_row_ptrs[user_idx];
+	int end = csr_row_ptrs[user_idx + 1];
+
+	int items_cnt = end - start;
+
+	int smem_iters = (items_cnt - 1) / smem_col_cnt + 1;
+
+	for(int smem_iter = 0; smem_iter < smem_iters; ++smem_iter) {
+		int smem_items = smem_col_cnt * (smem_iter + 1) < items_cnt ? smem_col_cnt : items_cnt - smem_col_cnt * smem_iter;
+
+		// f=80: all 32 threads read smem_col_cnt columns, 2 rows per thread (64 rows)
+		// then 16 threads read smem_col_cnt columns, 1 row per thread (16)
+		if(threadIdx.x < 64) {
+			int smem_col = 0;
+			while(smem_col < smem_items) {
+				smem_half[f * smem_col + threadIdx.x * 2] = VT_half[f * csr_col_idxs[start + smem_iter * smem_col_cnt + smem_col] + threadIdx.x * 2];
+				smem_half[f * smem_col + threadIdx.x * 2 + 1] = VT_half[f * csr_col_idxs[start + smem_iter * smem_col_cnt + smem_col] + threadIdx.x * 2 + 1];
+				++smem_col;
+			}
+			// if this smem_iter has less than 16 cols left
+			while(smem_col < smem_col_cnt) {
+				memset(&smem_half[f * smem_col + threadIdx.x * 2], 0, sizeof(smem_half[0]));
+				memset(&smem_half[f * smem_col + threadIdx.x * 2 + 1], 0, sizeof(smem_half[0]));
+				++smem_col;
+			}
+		}
+
+		if(threadIdx.x < 16) {
+			int smem_col = 0;
+			while(smem_col < smem_items) {
+				smem_half[f * smem_col + 64 + threadIdx.x] = VT_half[f * csr_col_idxs[start + smem_iter * smem_col_cnt + smem_col] + 64 + threadIdx.x];
+				++smem_col;
+			}
+			// if this smem_iter has less than 16 cols left
+			while(smem_col < smem_col_cnt) {
+				memset(&smem_half[f * smem_col + 64 + threadIdx.x], 0, sizeof(smem_half[0]));
+				++smem_col;
+			}
+		}
+
+		__syncthreads();
+
+		// actual work
+
+		for(int tile_iter = 0; tile_iter < smem_col_cnt / 16; ++tile_iter) {
+			//wmma::load_matrix_sync(vt_frag, smem_half + tile_row * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + tile_col * 16 + tile_iter * f * 16, f);
+
+			//wmma::mma_sync(acc_frag, vt_frag, v_frag, acc_frag);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+			wmma::load_matrix_sync(v_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+
+			wmma::mma_sync(acc_frag0_0, vt_frag, v_frag, acc_frag0_0);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag1_0, vt_frag, v_frag, acc_frag1_0);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag2_0, vt_frag, v_frag, acc_frag2_0);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag3_0, vt_frag, v_frag, acc_frag3_0);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag4_0, vt_frag, v_frag, acc_frag4_0);
+
+//			wmma::load_matrix_sync(vt_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+//			//wmma::load_matrix_sync(v_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+//			wmma::mma_sync(acc_frag5_0, vt_frag, v_frag, acc_frag5_0);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+			wmma::load_matrix_sync(v_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag1_1, vt_frag, v_frag, acc_frag1_1);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag2_1, vt_frag, v_frag, acc_frag2_1);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag3_1, vt_frag, v_frag, acc_frag3_1);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag4_1, vt_frag, v_frag, acc_frag4_1);
+
+//			wmma::load_matrix_sync(vt_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+//			//wmma::load_matrix_sync(v_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+//			wmma::mma_sync(acc_frag5_1, vt_frag, v_frag, acc_frag5_1);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+			wmma::load_matrix_sync(v_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag2_2, vt_frag, v_frag, acc_frag2_2);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag3_2, vt_frag, v_frag, acc_frag3_2);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag4_2, vt_frag, v_frag, acc_frag4_2);
+
+//			wmma::load_matrix_sync(vt_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+//			//wmma::load_matrix_sync(v_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+//			wmma::mma_sync(acc_frag5_2, vt_frag, v_frag, acc_frag5_2);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+			wmma::load_matrix_sync(v_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag3_3, vt_frag, v_frag, acc_frag3_3);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag4_3, vt_frag, v_frag, acc_frag4_3);
+
+//			wmma::load_matrix_sync(vt_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+//			//wmma::load_matrix_sync(v_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+//			wmma::mma_sync(acc_frag5_3, vt_frag, v_frag, acc_frag5_3);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+			wmma::load_matrix_sync(v_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag4_4, vt_frag, v_frag, acc_frag4_4);
+
+//			wmma::load_matrix_sync(vt_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+//			//wmma::load_matrix_sync(v_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+//			wmma::mma_sync(acc_frag5_4, vt_frag, v_frag, acc_frag5_4);
+//
+//			wmma::load_matrix_sync(vt_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+//			wmma::load_matrix_sync(v_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+//			wmma::mma_sync(acc_frag5_5, vt_frag, v_frag, acc_frag5_5);3
+			__syncthreads();
+		}
+
+		__syncthreads();
+	}
+
+	// regularization
+
+	float *smem_half_reg_term_buf = (float *)(smem_half + smem_col_cnt * f);
+
+	// 16 * 16 = 256 items in regularization fragment
+	// we have 32 threads so 256 / 32 = 8 items per thread
+	// needs update in case of multiple warps per block
+
+	smem_half_reg_term_buf[threadIdx.x * 8] = 0;
+	smem_half_reg_term_buf[threadIdx.x * 8 + 1] = 0;
+	smem_half_reg_term_buf[threadIdx.x * 8 + 2] = 0;
+	smem_half_reg_term_buf[threadIdx.x * 8 + 3] = 0;
+	smem_half_reg_term_buf[threadIdx.x * 8 + 4] = 0;
+	smem_half_reg_term_buf[threadIdx.x * 8 + 5] = 0;
+	smem_half_reg_term_buf[threadIdx.x * 8 + 6] = 0;
+	smem_half_reg_term_buf[threadIdx.x * 8 + 7] = 0;
+
+	__syncthreads();
+
+	if(threadIdx.x < 16) {
+		smem_half_reg_term_buf[threadIdx.x * 16 + threadIdx.x] = items_cnt * lambda;
+	}
+
+	__syncthreads();
+
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> reg_frag;
+
+	wmma::load_matrix_sync(reg_frag, smem_half_reg_term_buf, 16, wmma::mem_row_major);
+	for(int i = 0; i < reg_frag.num_elements; ++i) {
+		acc_frag0_0.x[i] += reg_frag.x[i];
+		acc_frag1_1.x[i] += reg_frag.x[i];
+		acc_frag2_2.x[i] += reg_frag.x[i];
+		acc_frag3_3.x[i] += reg_frag.x[i];
+		acc_frag4_4.x[i] += reg_frag.x[i];
+	}
+
+	// store
+
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + tile_col * 16 * f + tile_row * 16, acc_frag, f, wmma::mem_col_major);
+
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 0 * 16, acc_frag0_0, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 1 * 16, acc_frag1_0, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 2 * 16, acc_frag2_0, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 3 * 16, acc_frag3_0, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 4 * 16, acc_frag4_0, f, wmma::mem_col_major);
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 5 * 16, acc_frag5_0, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 1 * 16, acc_frag1_1, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 2 * 16, acc_frag2_1, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 3 * 16, acc_frag3_1, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 4 * 16, acc_frag4_1, f, wmma::mem_col_major);
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 5 * 16, acc_frag5_1, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 2 * 16, acc_frag2_2, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 3 * 16, acc_frag3_2, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 4 * 16, acc_frag4_2, f, wmma::mem_col_major);
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 5 * 16, acc_frag5_2, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 3 * 16, acc_frag3_3, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 4 * 16, acc_frag4_3, f, wmma::mem_col_major);
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 5 * 16, acc_frag5_3, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 4 * 16, acc_frag4_4, f, wmma::mem_col_major);
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 5 * 16, acc_frag5_4, f, wmma::mem_col_major);
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 5 * 16, acc_frag5_5, f, wmma::mem_col_major);
+
+	//if(tile_row != tile_col) {
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + tile_row * 16 * f + tile_col * 16, acc_frag, f, wmma::mem_row_major);
+
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 0 * 16, acc_frag0_0, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 0 * 16, acc_frag1_0, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 0 * 16, acc_frag2_0, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 0 * 16, acc_frag3_0, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 0 * 16, acc_frag4_0, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 0 * 16, acc_frag5_0, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 1 * 16, acc_frag1_1, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 1 * 16, acc_frag2_1, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 1 * 16, acc_frag3_1, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 1 * 16, acc_frag4_1, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 1 * 16, acc_frag5_1, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 2 * 16, acc_frag2_2, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 2 * 16, acc_frag3_2, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 2 * 16, acc_frag4_2, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 2 * 16, acc_frag5_2, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 3 * 16, acc_frag3_3, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 3 * 16, acc_frag4_3, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 3 * 16, acc_frag5_3, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 4 * 16, acc_frag4_4, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 4 * 16, acc_frag5_4, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 5 * 16, acc_frag5_5, f, wmma::mem_row_major);
+//	}
+}
+
+__global__
+void calculate_vtvs_smem_row_major_tensor_symmetric_mult_frag_f64(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt, int m_batch_offset) {
+	extern __shared__ half smem_half [];
+
+	//const unsigned int warp_id = threadIdx.x / 32;
+
+	wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::col_major> vt_frag;	// actually col-major
+	wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> v_frag;	// vt interpreted as row-major -> vt transposed -> v
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag;
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag0_0;		// tile_row = 0, tile_col = 0
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag1_0;		// tile_row = 1, tile_col = 0
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag2_0;		// tile_row = 2, tile_col = 0
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag3_0;		// tile_row = 3, tile_col = 0
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag4_0;		// tile_row = 4, tile_col = 0
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag5_0;		// tile_row = 5, tile_col = 0
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag1_1;		// tile_row = 1, tile_col = 1
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag2_1;		// tile_row = 2, tile_col = 1
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag3_1;		// tile_row = 3, tile_col = 1
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag4_1;		// tile_row = 4, tile_col = 1
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag5_1;		// tile_row = 5, tile_col = 1
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag2_2;		// tile_row = 2, tile_col = 2
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag3_2;		// tile_row = 3, tile_col = 2
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag4_2;		// tile_row = 4, tile_col = 2
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag5_2;		// tile_row = 5, tile_col = 2
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag3_3;		// tile_row = 3, tile_col = 3
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag4_3;		// tile_row = 4, tile_col = 3
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag5_3;		// tile_row = 5, tile_col = 3
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag4_4;		// tile_row = 4, tile_col = 4
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag5_4;		// tile_row = 4, tile_col = 5
+	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag5_5;		// tile_row = 5, tile_col = 5
+
+	//wmma::fill_fragment(acc_frag, 0.0f);
+	wmma::fill_fragment(acc_frag0_0, 0.0f);
+	wmma::fill_fragment(acc_frag1_0, 0.0f);
+	wmma::fill_fragment(acc_frag2_0, 0.0f);
+	wmma::fill_fragment(acc_frag3_0, 0.0f);
+	//wmma::fill_fragment(acc_frag4_0, 0.0f);
+	//wmma::fill_fragment(acc_frag5_0, 0.0f);
+	wmma::fill_fragment(acc_frag1_1, 0.0f);
+	wmma::fill_fragment(acc_frag2_1, 0.0f);
+	wmma::fill_fragment(acc_frag3_1, 0.0f);
+	//wmma::fill_fragment(acc_frag4_1, 0.0f);
+	//wmma::fill_fragment(acc_frag5_1, 0.0f);
+	wmma::fill_fragment(acc_frag2_2, 0.0f);
+	wmma::fill_fragment(acc_frag3_2, 0.0f);
+	//wmma::fill_fragment(acc_frag4_2, 0.0f);
+	//wmma::fill_fragment(acc_frag5_2, 0.0f);
+	wmma::fill_fragment(acc_frag3_3, 0.0f);
+	//wmma::fill_fragment(acc_frag4_3, 0.0f);
+	//wmma::fill_fragment(acc_frag5_3, 0.0f);
+	//wmma::fill_fragment(acc_frag4_4, 0.0f);
+	//wmma::fill_fragment(acc_frag5_3, 0.0f);
+	//wmma::fill_fragment(acc_frag5_5, 0.0f);
+
+	int user_idx = blockIdx.x + m_batch_offset;
+
+	int start = csr_row_ptrs[user_idx];
+	int end = csr_row_ptrs[user_idx + 1];
+
+	int items_cnt = end - start;
+
+	int smem_iters = (items_cnt - 1) / smem_col_cnt + 1;
+
+	for(int smem_iter = 0; smem_iter < smem_iters; ++smem_iter) {
+		int smem_items = smem_col_cnt * (smem_iter + 1) < items_cnt ? smem_col_cnt : items_cnt - smem_col_cnt * smem_iter;
+
+		// f=64: all 32 threads read smem_col_cnt columns, 2 rows per thread
+		if(threadIdx.x < f / 2) {
+			int smem_col = 0;
+			while(smem_col < smem_items) {
+				smem_half[f * smem_col + threadIdx.x * 2] = VT_half[f * csr_col_idxs[start + smem_iter * smem_col_cnt + smem_col] + threadIdx.x * 2];
+				smem_half[f * smem_col + threadIdx.x * 2 + 1] = VT_half[f * csr_col_idxs[start + smem_iter * smem_col_cnt + smem_col] + threadIdx.x * 2 + 1];
+				++smem_col;
+			}
+			// if this smem_iter has less than 16 cols left
+			while(smem_col < smem_col_cnt) {
+				memset(&smem_half[f * smem_col + threadIdx.x * 2], 0, sizeof(smem_half[0]));
+				memset(&smem_half[f * smem_col + threadIdx.x * 2 + 1], 0, sizeof(smem_half[0]));
+				++smem_col;
+			}
+		}
+
+		__syncthreads();
+
+		// actual work
+
+		for(int tile_iter = 0; tile_iter < smem_col_cnt / 16; ++tile_iter) {
+			//wmma::load_matrix_sync(vt_frag, smem_half + tile_row * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + tile_col * 16 + tile_iter * f * 16, f);
+
+			//wmma::mma_sync(acc_frag, vt_frag, v_frag, acc_frag);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+			wmma::load_matrix_sync(v_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+
+			wmma::mma_sync(acc_frag0_0, vt_frag, v_frag, acc_frag0_0);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag1_0, vt_frag, v_frag, acc_frag1_0);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag2_0, vt_frag, v_frag, acc_frag2_0);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag3_0, vt_frag, v_frag, acc_frag3_0);
+
+//			wmma::load_matrix_sync(vt_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+//			//wmma::load_matrix_sync(v_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+//			wmma::mma_sync(acc_frag4_0, vt_frag, v_frag, acc_frag4_0);
+
+//			wmma::load_matrix_sync(vt_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+//			//wmma::load_matrix_sync(v_frag, smem_half + 0 * 16 + tile_iter * f * 16, f);
+//			wmma::mma_sync(acc_frag5_0, vt_frag, v_frag, acc_frag5_0);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+			wmma::load_matrix_sync(v_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag1_1, vt_frag, v_frag, acc_frag1_1);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag2_1, vt_frag, v_frag, acc_frag2_1);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag3_1, vt_frag, v_frag, acc_frag3_1);
+
+//			wmma::load_matrix_sync(vt_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+//			//wmma::load_matrix_sync(v_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+//			wmma::mma_sync(acc_frag4_1, vt_frag, v_frag, acc_frag4_1);
+
+//			wmma::load_matrix_sync(vt_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+//			//wmma::load_matrix_sync(v_frag, smem_half + 1 * 16 + tile_iter * f * 16, f);
+//			wmma::mma_sync(acc_frag5_1, vt_frag, v_frag, acc_frag5_1);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+			wmma::load_matrix_sync(v_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag2_2, vt_frag, v_frag, acc_frag2_2);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+			//wmma::load_matrix_sync(v_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag3_2, vt_frag, v_frag, acc_frag3_2);
+
+//			wmma::load_matrix_sync(vt_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+//			//wmma::load_matrix_sync(v_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+//			wmma::mma_sync(acc_frag4_2, vt_frag, v_frag, acc_frag4_2);
+
+//			wmma::load_matrix_sync(vt_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+//			//wmma::load_matrix_sync(v_frag, smem_half + 2 * 16 + tile_iter * f * 16, f);
+//			wmma::mma_sync(acc_frag5_2, vt_frag, v_frag, acc_frag5_2);
+
+			wmma::load_matrix_sync(vt_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+			wmma::load_matrix_sync(v_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+			wmma::mma_sync(acc_frag3_3, vt_frag, v_frag, acc_frag3_3);
+
+//			wmma::load_matrix_sync(vt_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+//			//wmma::load_matrix_sync(v_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+//			wmma::mma_sync(acc_frag4_3, vt_frag, v_frag, acc_frag4_3);
+
+//			wmma::load_matrix_sync(vt_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+//			//wmma::load_matrix_sync(v_frag, smem_half + 3 * 16 + tile_iter * f * 16, f);
+//			wmma::mma_sync(acc_frag5_3, vt_frag, v_frag, acc_frag5_3);
+
+//			wmma::load_matrix_sync(vt_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+//			wmma::load_matrix_sync(v_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+//			wmma::mma_sync(acc_frag4_4, vt_frag, v_frag, acc_frag4_4);
+
+//			wmma::load_matrix_sync(vt_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+//			//wmma::load_matrix_sync(v_frag, smem_half + 4 * 16 + tile_iter * f * 16, f);
+//			wmma::mma_sync(acc_frag5_4, vt_frag, v_frag, acc_frag5_4);
+//
+//			wmma::load_matrix_sync(vt_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+//			wmma::load_matrix_sync(v_frag, smem_half + 5 * 16 + tile_iter * f * 16, f);
+//			wmma::mma_sync(acc_frag5_5, vt_frag, v_frag, acc_frag5_5);3
+			__syncthreads();
+		}
+
+		__syncthreads();
+	}
+
+	// regularization
+
+	float *smem_half_reg_term_buf = (float *)(smem_half + smem_col_cnt * f);
+
+	// 16 * 16 = 256 items in regularization fragment
+	// we have 32 threads so 256 / 32 = 8 items per thread
+	// needs update in case of multiple warps per block
+
+	smem_half_reg_term_buf[threadIdx.x * 8] = 0;
+	smem_half_reg_term_buf[threadIdx.x * 8 + 1] = 0;
+	smem_half_reg_term_buf[threadIdx.x * 8 + 2] = 0;
+	smem_half_reg_term_buf[threadIdx.x * 8 + 3] = 0;
+	smem_half_reg_term_buf[threadIdx.x * 8 + 4] = 0;
+	smem_half_reg_term_buf[threadIdx.x * 8 + 5] = 0;
+	smem_half_reg_term_buf[threadIdx.x * 8 + 6] = 0;
+	smem_half_reg_term_buf[threadIdx.x * 8 + 7] = 0;
+
+	__syncthreads();
+
+	if(threadIdx.x < 16) {
+		smem_half_reg_term_buf[threadIdx.x * 16 + threadIdx.x] = items_cnt * lambda;
+	}
+
+	__syncthreads();
+
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> reg_frag;
+
+	wmma::load_matrix_sync(reg_frag, smem_half_reg_term_buf, 16, wmma::mem_row_major);
+	for(int i = 0; i < reg_frag.num_elements; ++i) {
+		acc_frag0_0.x[i] += reg_frag.x[i];
+		acc_frag1_1.x[i] += reg_frag.x[i];
+		acc_frag2_2.x[i] += reg_frag.x[i];
+		acc_frag3_3.x[i] += reg_frag.x[i];
+	}
+
+	// store
+
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + tile_col * 16 * f + tile_row * 16, acc_frag, f, wmma::mem_col_major);
+
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 0 * 16, acc_frag0_0, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 1 * 16, acc_frag1_0, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 2 * 16, acc_frag2_0, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 3 * 16, acc_frag3_0, f, wmma::mem_col_major);
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 4 * 16, acc_frag4_0, f, wmma::mem_col_major);
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 5 * 16, acc_frag5_0, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 1 * 16, acc_frag1_1, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 2 * 16, acc_frag2_1, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 3 * 16, acc_frag3_1, f, wmma::mem_col_major);
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 4 * 16, acc_frag4_1, f, wmma::mem_col_major);
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 5 * 16, acc_frag5_1, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 2 * 16, acc_frag2_2, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 3 * 16, acc_frag3_2, f, wmma::mem_col_major);
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 4 * 16, acc_frag4_2, f, wmma::mem_col_major);
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 5 * 16, acc_frag5_2, f, wmma::mem_col_major);
+	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 3 * 16, acc_frag3_3, f, wmma::mem_col_major);
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 4 * 16, acc_frag4_3, f, wmma::mem_col_major);
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 5 * 16, acc_frag5_3, f, wmma::mem_col_major);
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 4 * 16, acc_frag4_4, f, wmma::mem_col_major);
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 5 * 16, acc_frag5_4, f, wmma::mem_col_major);
+	//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 5 * 16, acc_frag5_5, f, wmma::mem_col_major);
+
+	//if(tile_row != tile_col) {
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + tile_row * 16 * f + tile_col * 16, acc_frag, f, wmma::mem_row_major);
+
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 0 * 16 * f + 0 * 16, acc_frag0_0, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 0 * 16, acc_frag1_0, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 0 * 16, acc_frag2_0, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 0 * 16, acc_frag3_0, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 0 * 16, acc_frag4_0, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 0 * 16, acc_frag5_0, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 1 * 16 * f + 1 * 16, acc_frag1_1, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 1 * 16, acc_frag2_1, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 1 * 16, acc_frag3_1, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 1 * 16, acc_frag4_1, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 1 * 16, acc_frag5_1, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 2 * 16 * f + 2 * 16, acc_frag2_2, f, wmma::mem_row_major);
+		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 2 * 16, acc_frag3_2, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 2 * 16, acc_frag4_2, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 2 * 16, acc_frag5_2, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 3 * 16 * f + 3 * 16, acc_frag3_3, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 3 * 16, acc_frag4_3, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 3 * 16, acc_frag5_3, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 4 * 16 * f + 4 * 16, acc_frag4_4, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 4 * 16, acc_frag5_4, f, wmma::mem_row_major);
+		//wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + 5 * 16 * f + 5 * 16, acc_frag5_5, f, wmma::mem_row_major);
+//	}
+}
+
 // TODO: warps nr = f / 32
 // e.g. f = 64. within smsem iter each warp loops through its half of vvt
 // and stores current smem part in shared memory
@@ -684,6 +1496,7 @@ std::string als_model::to_string(CALCULATE_VVTS_TYPE calculate_vvts_type) {
 		case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS: return "SMEM_COL_MAJOR_TWO_THREADS";
 		case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR: return "SMEM_ROW_MAJOR_TENSOR";
 		case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC: return "SMEM_ROW_MAJOR_TENSOR_SYMMETRIC";
+		case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG: return "SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG";
 		default: return "UNKNOWN";
 	}
 }
@@ -847,6 +1660,7 @@ void als_model::train() {
 			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR:
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC:
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG:
 				smem_size = smem_col_cnt * f * sizeof(d_VT[0]);
 
 #ifdef USE_LOGGER
@@ -857,6 +1671,7 @@ void als_model::train() {
 			switch (calculate_vvts_type) {
 				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR:
 				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC:
+				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG:
 					CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_VT_half, n * f * sizeof(d_VT_half[0])));
 					float2half_array<<<(n*f-1)/1024 + 1, 1024>>>(d_VT, d_VT_half, f*n);
 			}
@@ -928,6 +1743,25 @@ void als_model::train() {
 							train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT_half, smem_col_cnt, m_batch_offset
 					);
 					break;
+				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG:
+					if(f % 16 != 0) {
+						throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG: f(" + std::to_string(f) + ") % 16 should be equal to 0");
+					}
+					if(smem_col_cnt % 16 != 0) {
+						throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG: smem_col_cnt(" + std::to_string(smem_col_cnt) + ") % 16 should be equal to 0");
+					}
+					if(f == 80) {
+						calculate_vtvs_smem_row_major_tensor_symmetric_mult_frag_f80<<<m_batch_size, 32, smem_size + 16 * 16>>>(d_xtxs, train_ratings.d_csr_row_ptrs,
+								train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT_half, smem_col_cnt, m_batch_offset
+						);
+					} else if (f == 64) {
+						calculate_vtvs_smem_row_major_tensor_symmetric_mult_frag_f64<<<m_batch_size, 32, smem_size + 16 * 16>>>(d_xtxs, train_ratings.d_csr_row_ptrs,
+								train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT_half, smem_col_cnt, m_batch_offset
+						);
+					} else {
+						throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG: f(" + std::to_string(f) + ") not supported");
+					}
+					break;
 				case CALCULATE_VVTS_TYPE::SIMPLE:
 				default:
 					calculate_vtvs<<<m_batch_size, f>>>(d_xtxs, train_ratings.d_csr_row_ptrs,
@@ -945,7 +1779,7 @@ void als_model::train() {
 #endif
 
 #ifdef DEBUG_SAVE
-				//save_device_array_float(d_xtxs + f * f * 5, f * f, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_1_vtv_user_5_m_batch=" + std::to_string(m_batch));
+				save_device_array_float(d_xtxs + f * f * 5, f * f, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_1_vtv_user_5_m_batch=" + std::to_string(m_batch));
 				//save_device_array_float(d_xtxs + f * f * 11, f * f, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_1_vtv_user_11_m_batch=" + std::to_string(m_batch));
 				//save_device_array_float(d_xtxs + f * f * 12, f * f, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_1_vtv_user_12_m_batch=" + std::to_string(m_batch));
 				//save_device_array_float(d_xtxs + f * f * 13, f * f, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_1_vtv_user_13_m_batch=" + std::to_string(m_batch));
@@ -1137,6 +1971,7 @@ void als_model::train() {
 			case CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR:
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC:
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG:
 				smem_size = smem_col_cnt * f * sizeof(d_UT[0]);
 
 #ifdef USE_LOGGER
@@ -1148,6 +1983,7 @@ void als_model::train() {
 			switch (calculate_vvts_type) {
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR:
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC:
+			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG:
 				CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_UT_half, m * f * sizeof(d_UT_half[0])));
 				float2half_array<<<(m*f-1)/1024 + 1, 1024>>>(d_UT, d_UT_half, f*m);
 			}
@@ -1218,6 +2054,26 @@ void als_model::train() {
 					calculate_vtvs_smem_row_major_tensor_symmetric<<<n_batch_size, symmetric_tiles_cnt * 32, smem_size>>>(d_xtxs, train_ratings.d_csc_col_ptrs,
 							train_ratings.d_csc_row_idxs, lambda, n, f, d_UT_half, smem_col_cnt, n_batch_offset
 					);
+					break;
+				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG:
+					if(f % 16 != 0) {
+						throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG: f(" + std::to_string(f) + ") % 16 should be equal to 0");
+					}
+					if(smem_col_cnt % 16 != 0) {
+						throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG: smem_col_cnt(" + std::to_string(smem_col_cnt) + ") % 16 should be equal to 0");
+					}
+
+					if(f == 80) {
+						calculate_vtvs_smem_row_major_tensor_symmetric_mult_frag_f80<<<n_batch_size, 32, smem_size + 16 * 16>>>(d_xtxs, train_ratings.d_csc_col_ptrs,
+								train_ratings.d_csc_row_idxs, lambda, n, f, d_UT_half, smem_col_cnt, n_batch_offset
+						);
+					} else if (f == 64) {
+						calculate_vtvs_smem_row_major_tensor_symmetric_mult_frag_f64<<<n_batch_size, 32, smem_size  + 16 * 16>>>(d_xtxs, train_ratings.d_csc_col_ptrs,
+								train_ratings.d_csc_row_idxs, lambda, n, f, d_UT_half, smem_col_cnt, n_batch_offset
+						);
+					} else {
+						throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG: f(" + std::to_string(f) + ") not supported");
+					}
 					break;
 				case CALCULATE_VVTS_TYPE::SIMPLE:
 				default:

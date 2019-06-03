@@ -13,28 +13,31 @@ logger g_logger;
 
 #define CUDA_DEVICE_ID 0
 
-
 int main(int argc, char **argv) {
 	int m = atoi(argv[1]);
 	int n = atoi(argv[2]);
 	//int f = atoi(argv[3]);
-	//int f = 80;
+	//int f = 32;
 	//int f = 64;
-	int f = 96;
+	int f = 80;
+	//int f = 96;
+	//int f = 128;
 	long nnz_train = atoi(argv[4]);
 	long nnz_test = atoi(argv[5]);
 	float lambda = atof(argv[6]);
 	int als_iters = atoi(argv[7]);
 	std::string data_folder = argv[8];
 	int als_runs = atoi(argv[9]);
+
 	//als_model::CALCULATE_VVTS_TYPE als_calculate_vvts_type = static_cast<als_model::CALCULATE_VVTS_TYPE>(atoi(argv[10]));
 	//als_model::CALCULATE_VVTS_TYPE als_calculate_vvts_type = als_model::CALCULATE_VVTS_TYPE::SIMPLE;	// easier debugging
 	//als_model::CALCULATE_VVTS_TYPE als_calculate_vvts_type = als_model::CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR;	// easier debugging
 	//als_model::CALCULATE_VVTS_TYPE als_calculate_vvts_type = als_model::CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_NO_CALC;	// easier debugging
 	//als_model::CALCULATE_VVTS_TYPE als_calculate_vvts_type = als_model::CALCULATE_VVTS_TYPE::SMEM_COL_MAJOR;	// easier debugging
 	//als_model::CALCULATE_VVTS_TYPE als_calculate_vvts_type = als_model::CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR;	// easier debugging
-	als_model::CALCULATE_VVTS_TYPE als_calculate_vvts_type = als_model::CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC;	// easier debugging
-	//int smem_col_cnt = 112;	// shoud be calculated based on device shared memory size
+	//als_model::CALCULATE_VVTS_TYPE als_calculate_vvts_type = als_model::CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC;	// easier debugging
+	als_model::CALCULATE_VVTS_TYPE als_calculate_vvts_type = als_model::CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG;	// easier debugging
+
 	int smem_col_cnt = 32;	// shoud be calculated based on device shared memory sized
 	//int smem_col_cnt = 112;	// shoud be calculated based on device shared memory size
 

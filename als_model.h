@@ -16,7 +16,8 @@ struct als_model {
 		SMEM_ROW_MAJOR_NO_CALC,
 		SMEM_COL_MAJOR_TWO_THREADS,
 		SMEM_ROW_MAJOR_TENSOR,
-		SMEM_ROW_MAJOR_TENSOR_SYMMETRIC
+		SMEM_ROW_MAJOR_TENSOR_SYMMETRIC,
+		SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG
 	};
 
 	als_model(cuda_sparse_matrix &train_ratings, cuda_sparse_matrix &test_ratings, int f,
