@@ -1287,8 +1287,8 @@ void als_model::train() {
 
 	// final result from device to host
 
-	CUDA_CHECK(cudaMemcpy(h_VT, d_VT, n * f, cudaMemcpyDeviceToHost));
-	CUDA_CHECK(cudaMemcpy(h_UT, d_UT, m * f, cudaMemcpyDeviceToHost));
+	CUDA_CHECK(cudaMemcpy(h_VT, d_VT, n * f * sizeof(d_VT[0]), cudaMemcpyDeviceToHost));
+	CUDA_CHECK(cudaMemcpy(h_UT, d_UT, m * f * sizeof(d_UT[0]), cudaMemcpyDeviceToHost));
 
 #ifdef USE_LOGGER
 	g_logger.log("als model training done", true);
