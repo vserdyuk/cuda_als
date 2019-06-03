@@ -11,6 +11,7 @@ using namespace nvcuda;
 #include "logger.h"
 #endif
 
+#define CALC_RSME
 __global__
 void float2half_array(float *float_arr, half *half_arr, int size) {
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
@@ -1240,10 +1241,11 @@ void als_model::train() {
 
 		}	// update V block
 
+#ifdef CALC_RSME
+
 		float *d_err_arr = 0;
 		int err_size = 1000;
 		CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_err_arr, err_size * sizeof(d_err_arr[0])));
-
 
 		CUDA_CHECK(cudaMemset(d_err_arr, 0, err_size * sizeof(float)));
 
@@ -1261,7 +1263,7 @@ void als_model::train() {
 		g_logger.log("train root-mean-square error: " + std::to_string(sqrt(square_err_train / train_ratings.val_cnt)), true);
 #endif
 
-		CUDA_CHECK(cudaMemset(d_err_arr, 0, err_size * sizeof(float)));
+		CUDA_CHECK(cudaMemset(d_err_arr, 0, err_size * sizeof(d_err_arr[0])));
 
 		calculate_square_error<<<(test_ratings.val_cnt - 1) / 256 + 1, 256>>>(test_ratings.d_csr_coo_vals, test_ratings.d_coo_row_idxs,
 				test_ratings.d_csr_coo_col_idxs, test_ratings.val_cnt, d_UT, d_VT, f, d_err_arr, err_size
@@ -1275,10 +1277,15 @@ void als_model::train() {
 
 #ifdef USE_LOGGER
 		g_logger.log("test root-mean-square error: " + std::to_string(sqrt(square_err_test / test_ratings.val_cnt)), true);
-		g_logger.event_finished(logger::EVENT_TYPE::ALS_ITER, true);
 #endif
 
 		CUDA_CHECK(cudaFree(d_err_arr));
+
+#endif	// CALC_RSME
+
+#ifdef USE_LOGGER
+		g_logger.event_finished(logger::EVENT_TYPE::ALS_ITER, true);
+#endif
 	}	// iters loop
 
 #ifdef USE_LOGGER
