@@ -118,7 +118,7 @@ void calculate_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lam
 				out += items_cnt * lambda;
 			}
 
-			vtvs[user_idx * f * f + out_row + out_col * f] = out;
+			vtvs[blockIdx.x * f * f + out_row + out_col * f] = out;
 
 			++left_row;
 			++out_row;
@@ -181,11 +181,13 @@ void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_
 					out += smem[left_row_offset + left_col_offset] * smem[top_row_offset + top_col_offset];
 				}
 
-				vtvs[user_idx * f * f + out_row + out_col * f] += out;
+				vtvs[blockIdx.x * f * f + out_row + out_col * f] += out;
 
 				++left_row;
 				++out_row;
 			}
+
+			__syncthreads();
 		}
 
 		// regularization
@@ -285,11 +287,13 @@ void calculate_vtvs_smem_col_major(float *vtvs, int *csr_row_ptrs, int *csr_col_
 					out += smem[left_row_offset + left_col_offset] * smem[top_row_offset + top_col_offset];
 				}
 
-				vtvs[user_idx * f * f + out_row + out_col * f] += out;
+				vtvs[blockIdx.x * f * f + out_row + out_col * f] += out;
 
 				++left_row;
 				++out_row;
 			}
+
+			__syncthreads();
 		}
 
 		// regularization
@@ -358,11 +362,13 @@ void calculate_vtvs_smem_col_major_two_threads(float *vtvs, int *csr_row_ptrs, i
 					out += smem[left_row_offset + left_col_offset] * smem[top_row_offset + top_col_offset];
 				}
 
-				vtvs[user_idx * f * f + out_row + out_col * f] += out;	// how bad is += for performance?
+				vtvs[blockIdx.x * f * f + out_row + out_col * f] += out;	// how bad is += for performance?
 
 				++left_row;
 				++out_row;
 			}
+
+			__syncthreads();
 		}
 
 		// regularization
@@ -437,6 +443,8 @@ void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *c
 
 			wmma::mma_sync(acc_frag, vt_frag, v_frag, acc_frag);
 		}
+
+		__syncthreads();
 	}
 	// TODO: regularization
 
@@ -545,6 +553,8 @@ void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_pt
 
 			wmma::mma_sync(acc_frag, vt_frag, v_frag, acc_frag);
 		}
+
+		__syncthreads();
 	}
 
 	// store
