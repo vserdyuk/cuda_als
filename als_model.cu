@@ -11,7 +11,39 @@ using namespace nvcuda;
 #include "logger.h"
 #endif
 
+#include <fstream>
+#include <limits>
+#include <iostream>
+//#define DEBUG_SAVE
 #define CALC_RSME
+
+static void save_host_array_float(const float *h_arr, const size_t size, const std::string &path) {
+	std::ofstream out;
+
+	out.open(path);
+
+	out << std::fixed;
+
+	out.precision(std::numeric_limits<double>::max_digits10);
+
+	for(size_t i = 0; i < size; ++i) {
+		out << h_arr[i] << std::endl;
+	}
+}
+
+static void save_device_array_float(const float *d_arr, const size_t size, const std::string &path) {
+	float *h_arr;
+
+	CUDA_CHECK(cudaMallocHost((void **)&h_arr, size * sizeof(h_arr[0])));
+
+	CUDA_CHECK(cudaMemcpy(h_arr, d_arr, size * sizeof(d_arr[0]), cudaMemcpyDeviceToHost));
+
+	save_host_array_float(h_arr, size, path);
+
+	CUDA_CHECK(cudaFreeHost(h_arr));
+}
+
+
 __global__
 void float2half_array(float *float_arr, half *half_arr, int size) {
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
@@ -856,6 +888,13 @@ void als_model::train() {
 				g_logger.log("vtvs calculation done type=" + to_string(calculate_vvts_type) + " m_batch=" + std::to_string(m_batch), true);
 #endif
 
+#ifdef DEBUG_SAVE
+				//save_device_array_float(d_xtxs + f * f * 11, f * f, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_1_vtv_user_11_m_batch=" + std::to_string(m_batch));
+				//save_device_array_float(d_xtxs + f * f * 12, f * f, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_1_vtv_user_12_m_batch=" + std::to_string(m_batch));
+				//save_device_array_float(d_xtxs + f * f * 13, f * f, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_1_vtv_user_13_m_batch=" + std::to_string(m_batch));
+				//save_device_array_float(d_xtxs, f * f * m_batch_size, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_1_vtvs_m_batch=" + std::to_string(m_batch));
+#endif
+
 				// TODO: single array of max(m, n) allocated in model constructor
 
 				// host array of pointers to each device vtv
@@ -951,6 +990,10 @@ void als_model::train() {
 
 #ifdef USE_LOGGER
 			g_logger.event_finished(logger::EVENT_TYPE::ALS_UPDATE_U, true);
+#endif
+
+#ifdef DEBUG_SAVE
+			save_device_array_float(d_UT, f * m, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_2_UT");
 #endif
 
 		}	// update U block
@@ -1142,6 +1185,11 @@ void als_model::train() {
 				g_logger.log("utus calculation done type=" + to_string(calculate_vvts_type) + " n_batch=" + std::to_string(n_batch), true);
 #endif
 
+#ifdef DEBUG_SAVE
+				//save_device_array_float(d_xtxs + f * f * 9, f * f, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_3_utu_item_9_n_batch=" + std::to_string(n_batch));
+				//save_device_array_float(d_xtxs, f * f * n_batch_size, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_3_utus_n_batch=" + std::to_string(n_batch));
+#endif
+
 				// TODO: single array of max(m, n) allocated in model constructor
 
 				// host array of pointers to each device utu
@@ -1239,6 +1287,9 @@ void als_model::train() {
 			g_logger.event_finished(logger::EVENT_TYPE::ALS_UPDATE_V, true);
 #endif
 
+#ifdef DEBUG_SAVE
+			save_device_array_float(d_VT, f * n, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_4_VT");
+#endif
 		}	// update V block
 
 #ifdef CALC_RSME
