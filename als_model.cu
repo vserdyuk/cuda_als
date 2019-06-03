@@ -424,18 +424,11 @@ __global__
 void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt, int m_batch_offset) {
 	extern __shared__ half smem_half [];
 
-	// add smem space for regularization 16*16 matrix?
-	// shoud probably add it in the end to avoid warp divergence
-
-	// assume f % 16 == 0, smem_col_cnt % 16 == 0 !!!!!
-
 	const unsigned int warp_id = threadIdx.x / 32;
-	//const unsigned int lane_id = threadIdx.x % 32;
 
 	wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::col_major> vt_frag;	// actually col-major
 	wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> v_frag;	// vt interpreted as row-major -> vt transposed -> v
 	wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag;
-	//wmma::fragment<wmma::accumulator, 16, 16, 16, float> reg_frag;
 
 	wmma::fill_fragment(acc_frag, 0.0f);
 
@@ -460,6 +453,12 @@ void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *c
 			while(smem_col < smem_items) {
 				smem_half[f * smem_col + threadIdx.x] = VT_half[f * csr_col_idxs[start + smem_iter * smem_col_cnt + smem_col] + threadIdx.x];
 				++smem_col;
+
+#ifdef FIND_NAN
+				if(smem_half[f * smem_col + threadIdx.x] != smem_half[f * smem_col + threadIdx.x]) {
+					printf("smem_half nan found blockIdx.x=%d threadIdx.x=%d\n", blockIdx.x, threadIdx.x);
+				}
+#endif
 			}
 			// if this smem_iter has less than 16 cols left
 			while(smem_col < smem_col_cnt) {
@@ -473,22 +472,37 @@ void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *c
 		// actual work
 
 		for(int tile_iter = 0; tile_iter < smem_col_cnt / 16; ++tile_iter) {
-
-			//wmma::load_matrix_sync(a_frag, a + aCol + aRow * lda, lda);
-			//wmma::load_matrix_sync(b_frag, b + bCol + bRow * ldb, ldb);
-
 			wmma::load_matrix_sync(vt_frag, smem_half + tile_row * 16 + tile_iter * f * 16, f);
 			wmma::load_matrix_sync(v_frag, smem_half + tile_col * 16 + tile_iter * f * 16, f);
 
+#ifdef FIND_NAN
+			for(size_t i = 0; i < vt_frag.num_elements; ++i) {
+				if(vt_frag.x[i] != vt_frag.x[i]) {
+					printf("vt_frag nan found blockIdx.x=%d threadIdx.x=%d\n", blockIdx.x, threadIdx.x);
+				}
+			}
+			for(size_t i = 0; i < v_frag.num_elements; ++i) {
+				if(v_frag.x[i] != v_frag.x[i]) {
+					printf("v_frag nan found blockIdx.x=%d threadIdx.x=%d\n", blockIdx.x, threadIdx.x);
+				}
+			}
+#endif
+
 			wmma::mma_sync(acc_frag, vt_frag, v_frag, acc_frag);
+
+#ifdef FIND_NAN
+			for(size_t i = 0; i < acc_frag.num_elements; ++i) {
+				if(acc_frag.x[i] != acc_frag.x[i]) {
+					printf("acc_frag nan found blockIdx.x=%d threadIdx.x=%d\n", blockIdx.x, threadIdx.x);
+				}
+			}
+#endif
 		}
 
 		__syncthreads();
 	}
-	// TODO: regularization
 
-	/*
-	// for some reason it is unstable, so for now I'm using dumb regularize_vtvs kernel instead of this
+	// regularization
 	float *smem_half_reg_term_buf = (float *)(smem_half + smem_col_cnt * f);
 
 
@@ -496,11 +510,15 @@ void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *c
 		smem_half_reg_term_buf[threadIdx.x] = 0;
 	}
 
+	__syncthreads();
+
 	if(threadIdx.x < 16) {
 		smem_half_reg_term_buf[threadIdx.x * 16 + threadIdx.x] = items_cnt * lambda;
 	}
 
 	__syncthreads(); // ?
+
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> reg_frag;
 
 	if(tile_row == tile_col) {
 		wmma::load_matrix_sync(reg_frag, smem_half_reg_term_buf, 16, wmma::mem_row_major);
@@ -508,7 +526,7 @@ void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *c
 			acc_frag.x[i] += reg_frag.x[i];
 		}
 	}
-	*/
+
 	// store
 
 	// vtvs[user_idx * f * f + out_row + out_col * f] += out;
@@ -518,11 +536,6 @@ void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *c
 __global__
 void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int m, int f, half *VT_half, int smem_col_cnt, int m_batch_offset) {
 	extern __shared__ half smem_half [];
-
-	// add smem space for regularization 16*16 matrix?
-	// shoud probably add it in the end to avoid warp divergence
-
-	// assume f % 16 == 0, smem_col_cnt % 16 == 0 !!!!!
 
 	const unsigned int warp_id = threadIdx.x / 32;
 	//const unsigned int lane_id = threadIdx.x % 32;
@@ -588,10 +601,6 @@ void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_pt
 		// actual work
 
 		for(int tile_iter = 0; tile_iter < smem_col_cnt / 16; ++tile_iter) {
-
-			//wmma::load_matrix_sync(a_frag, a + aCol + aRow * lda, lda);
-			//wmma::load_matrix_sync(b_frag, b + bCol + bRow * ldb, ldb);
-
 			wmma::load_matrix_sync(vt_frag, smem_half + tile_row * 16 + tile_iter * f * 16, f);
 			wmma::load_matrix_sync(v_frag, smem_half + tile_col * 16 + tile_iter * f * 16, f);
 
@@ -623,6 +632,33 @@ void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_pt
 		__syncthreads();
 	}
 
+	// regularization
+
+	float *smem_half_reg_term_buf = (float *)(smem_half + smem_col_cnt * f);
+
+
+	if(threadIdx.x < 16 * 16) {
+		smem_half_reg_term_buf[threadIdx.x] = 0;
+	}
+
+	__syncthreads();
+
+	if(threadIdx.x < 16) {
+		smem_half_reg_term_buf[threadIdx.x * 16 + threadIdx.x] = items_cnt * lambda;
+	}
+
+	__syncthreads(); // ?
+
+	wmma::fragment<wmma::accumulator, 16, 16, 16, float> reg_frag;
+
+	if(tile_row == tile_col) {
+		wmma::load_matrix_sync(reg_frag, smem_half_reg_term_buf, 16, wmma::mem_row_major);
+		for(int i = 0; i < reg_frag.num_elements; ++i) {
+			acc_frag.x[i] += reg_frag.x[i];
+		}
+	}
+
+
 	// store
 
 	wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + tile_col * 16 * f + tile_row * 16, acc_frag, f, wmma::mem_col_major);
@@ -630,18 +666,6 @@ void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_pt
 	if(tile_row != tile_col) {
 		wmma::store_matrix_sync(vtvs + blockIdx.x * f * f + tile_row * 16 * f + tile_col * 16, acc_frag, f, wmma::mem_row_major);
 	}
-}
-
-__global__
-void regularize_vtvs(float *vtvs, int *csr_row_ptrs, int *csr_col_idxs, float lambda, int f, int m_batch_offset) {
-	int user_idx = blockIdx.x + m_batch_offset;
-
-	int start = csr_row_ptrs[user_idx];
-	int end = csr_row_ptrs[user_idx + 1];
-
-	int items_cnt = end - start;
-
-	vtvs[blockIdx.x * f * f + threadIdx.x + threadIdx.x * f] += items_cnt * lambda;
 }
 
 // TODO: warps nr = f / 32
@@ -877,11 +901,8 @@ void als_model::train() {
 					if(smem_col_cnt % 16 != 0) {
 						throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR: smem_col_cnt(" + std::to_string(smem_col_cnt) + ") % 16 should be equal to 0");
 					}
-					calculate_vtvs_smem_row_major_tensor<<<m_batch_size, (f * f / 16 / 16) * 32, smem_size>>>(d_xtxs, train_ratings.d_csr_row_ptrs,
+					calculate_vtvs_smem_row_major_tensor<<<m_batch_size, (f * f / 16 / 16) * 32, smem_size + 16 * 16>>>(d_xtxs, train_ratings.d_csr_row_ptrs,
 							train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT_half, smem_col_cnt, m_batch_offset
-					);
-					regularize_vtvs<<<m_batch_size, f>>>(d_xtxs, train_ratings.d_csr_row_ptrs,
-							train_ratings.d_csr_coo_col_idxs, lambda, f, m_batch_offset
 					);
 					break;
 				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC:
@@ -900,9 +921,6 @@ void als_model::train() {
 
 					calculate_vtvs_smem_row_major_tensor_symmetric<<<m_batch_size, symmetric_tiles_cnt * 32, smem_size>>>(d_xtxs, train_ratings.d_csr_row_ptrs,
 							train_ratings.d_csr_coo_col_idxs, lambda, m, f, d_VT_half, smem_col_cnt, m_batch_offset
-					);
-					regularize_vtvs<<<m_batch_size, f>>>(d_xtxs, train_ratings.d_csr_row_ptrs,
-							train_ratings.d_csr_coo_col_idxs, lambda, f, m_batch_offset
 					);
 					break;
 				case CALCULATE_VVTS_TYPE::SIMPLE:
@@ -1104,7 +1122,7 @@ void als_model::train() {
 
 			int smem_size = 0;
 			half *d_UT_half = 0;
-			int symmetric_tiles_cnt;
+			int symmetric_tiles_cnt = 0;
 
 			switch (calculate_vvts_type) {
 			case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR:
@@ -1173,11 +1191,8 @@ void als_model::train() {
 					if(smem_col_cnt % 16 != 0) {
 						throw std::runtime_error("SMEM_ROW_MAJOR_TENSOR: smem_col_cnt(" + std::to_string(smem_col_cnt) + ") % 16 should be equal to 0");
 					}
-					calculate_vtvs_smem_row_major_tensor<<<n_batch_size, (f * f / 16 / 16) * 32, smem_size>>>(d_xtxs, train_ratings.d_csc_col_ptrs,
+					calculate_vtvs_smem_row_major_tensor<<<n_batch_size, (f * f / 16 / 16) * 32, smem_size + 16 * 16>>>(d_xtxs, train_ratings.d_csc_col_ptrs,
 							train_ratings.d_csc_row_idxs, lambda, n, f, d_UT_half, smem_col_cnt, n_batch_offset
-					);
-					regularize_vtvs<<<n_batch_size, f>>>(d_xtxs, train_ratings.d_csc_col_ptrs,
-							train_ratings.d_csc_row_idxs, lambda, f, n_batch_offset
 					);
 					break;
 				case CALCULATE_VVTS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC:
@@ -1196,9 +1211,6 @@ void als_model::train() {
 
 					calculate_vtvs_smem_row_major_tensor_symmetric<<<n_batch_size, symmetric_tiles_cnt * 32, smem_size>>>(d_xtxs, train_ratings.d_csc_col_ptrs,
 							train_ratings.d_csc_row_idxs, lambda, n, f, d_UT_half, smem_col_cnt, n_batch_offset
-					);
-					regularize_vtvs<<<n_batch_size, f>>>(d_xtxs, train_ratings.d_csc_col_ptrs,
-							train_ratings.d_csc_row_idxs, lambda, f, n_batch_offset
 					);
 					break;
 				case CALCULATE_VVTS_TYPE::SIMPLE:
