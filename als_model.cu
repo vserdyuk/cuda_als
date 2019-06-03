@@ -1337,6 +1337,10 @@ void als_model::train() {
 #endif
 		}	// update V block
 
+#ifdef USE_LOGGER
+		g_logger.event_finished(logger::EVENT_TYPE::ALS_ITER, true);
+#endif
+
 #ifdef CALC_RSME
 
 		float *d_err_arr = 0;
@@ -1378,10 +1382,6 @@ void als_model::train() {
 		CUDA_CHECK(cudaFree(d_err_arr));
 
 #endif	// CALC_RSME
-
-#ifdef USE_LOGGER
-		g_logger.event_finished(logger::EVENT_TYPE::ALS_ITER, true);
-#endif
 	}	// iters loop
 
 #ifdef USE_LOGGER
