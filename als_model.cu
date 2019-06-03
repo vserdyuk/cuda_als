@@ -14,6 +14,8 @@ using namespace nvcuda;
 #include <fstream>
 #include <limits>
 #include <iostream>
+
+#define FIND_NAN
 //#define DEBUG_SAVE
 #define CALC_RSME
 
@@ -183,6 +185,12 @@ void calculate_vtvs_smem_row_major(float *vtvs, int *csr_row_ptrs, int *csr_col_
 			// Each thread reads smem_col_cnt columns - all threads are busy
 			for(int smem_col = 0; smem_col < smem_items; ++smem_col) {
 				smem[f * smem_col + threadIdx.x] = VT[f * csr_col_idxs[start + smem_iter * smem_col_cnt + smem_col] + threadIdx.x];
+
+#ifdef FIND_NAN
+				if(smem[f * smem_col + threadIdx.x] != smem[f * smem_col + threadIdx.x]) {
+					printf("smem nan found blockIdx.x=%d threadIdx.x=%d\n", blockIdx.x, threadIdx.x);
+				}
+#endif
 			}
 
 			__syncthreads();
@@ -446,8 +454,6 @@ void calculate_vtvs_smem_row_major_tensor(float *vtvs, int *csr_row_ptrs, int *c
 	for(int smem_iter = 0; smem_iter < smem_iters; ++smem_iter) {
 		int smem_items = smem_col_cnt * (smem_iter + 1) < items_cnt ? smem_col_cnt : items_cnt - smem_col_cnt * smem_iter;
 
-		__syncthreads(); // need it?
-
 		// First 64(f) threads read smem_col_cnt columns, others are idle
 		if(threadIdx.x < f) {
 			int smem_col = 0;
@@ -556,14 +562,19 @@ void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_pt
 	for(int smem_iter = 0; smem_iter < smem_iters; ++smem_iter) {
 		int smem_items = smem_col_cnt * (smem_iter + 1) < items_cnt ? smem_col_cnt : items_cnt - smem_col_cnt * smem_iter;
 
-		__syncthreads(); // need it?
-
 		// First 64(f) threads read smem_col_cnt columns, others are idle
 		if(threadIdx.x < f) {
 			int smem_col = 0;
 			while(smem_col < smem_items) {
 				smem_half[f * smem_col + threadIdx.x] = VT_half[f * csr_col_idxs[start + smem_iter * smem_col_cnt + smem_col] + threadIdx.x];
 				++smem_col;
+
+#ifdef FIND_NAN
+				if(smem_half[f * smem_col + threadIdx.x] != smem_half[f * smem_col + threadIdx.x]) {
+					printf("smem_half nan found blockIdx.x=%d threadIdx.x=%d\n", blockIdx.x, threadIdx.x);
+				}
+#endif
+
 			}
 			// if this smem_iter has less than 16 cols left
 			while(smem_col < smem_col_cnt) {
@@ -584,7 +595,29 @@ void calculate_vtvs_smem_row_major_tensor_symmetric(float *vtvs, int *csr_row_pt
 			wmma::load_matrix_sync(vt_frag, smem_half + tile_row * 16 + tile_iter * f * 16, f);
 			wmma::load_matrix_sync(v_frag, smem_half + tile_col * 16 + tile_iter * f * 16, f);
 
+#ifdef FIND_NAN
+			for(size_t i = 0; i < vt_frag.num_elements; ++i) {
+				if(vt_frag.x[i] != vt_frag.x[i]) {
+					printf("vt_frag nan found blockIdx.x=%d threadIdx.x=%d\n", blockIdx.x, threadIdx.x);
+				}
+			}
+			for(size_t i = 0; i < v_frag.num_elements; ++i) {
+				if(v_frag.x[i] != v_frag.x[i]) {
+					printf("v_frag nan found blockIdx.x=%d threadIdx.x=%d\n", blockIdx.x, threadIdx.x);
+				}
+			}
+#endif
+
 			wmma::mma_sync(acc_frag, vt_frag, v_frag, acc_frag);
+
+#ifdef FIND_NAN
+			for(size_t i = 0; i < acc_frag.num_elements; ++i) {
+				if(acc_frag.x[i] != acc_frag.x[i]) {
+					printf("acc_frag nan found blockIdx.x=%d threadIdx.x=%d\n", blockIdx.x, threadIdx.x);
+				}
+			}
+#endif
+
 		}
 
 		__syncthreads();
