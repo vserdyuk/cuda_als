@@ -7,8 +7,16 @@ using namespace nvcuda;
 #include "cuda_runtime.h"
 #include "cuda_common.h"
 
+
 #ifdef USE_LOGGER
 #include "logger.h"
+#endif
+
+//#define USE_CUMF_ALS_CG
+
+#ifdef USE_CUMF_ALS_CG
+#include "cumf_als_cg/cg.h"
+#define CG_ITER 6
 #endif
 
 #include <fstream>
@@ -1554,7 +1562,11 @@ als_model::~als_model() {
 void als_model::train() {
 
 #ifdef USE_LOGGER
-	g_logger.log("als model training started", true);
+#ifdef USE_CUMF_ALS_CG
+	g_logger.log("als model training started USE_CUMF_ALS_CG=true", true);
+#else
+	g_logger.log("als model training started USE_CUMF_ALS_CG=false", true);
+#endif
 #endif
 
 	unsigned int seed = 0;
@@ -1786,6 +1798,29 @@ void als_model::train() {
 				//save_device_array_float(d_xtxs, f * f * m_batch_size, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_1_vtvs_m_batch=" + std::to_string(m_batch));
 #endif
 
+#ifdef USE_CUMF_ALS_CG
+#ifdef CUMF_TT_FP16
+				//cg_iter = als_iter: solve more carefully in later ALS iterations
+				//printf("\tCG solver with fp16.\n");
+				//updateXWithCGHost_tt_fp16(tt, &XT[batch_offset*f], &ythetaT[batch_offset*f], batch_size, f, CG_ITER);
+				updateXWithCGHost_tt_fp16(d_xtxs, &d_UT[m_batch_offset * f], &d_VTRT[m_batch_offset * f], m_batch_size, f, CG_ITER);
+
+#ifdef USE_LOGGER
+				g_logger.log("CG solver: FP16 U solve done m_batch=" + std::to_string(m_batch), true);
+#endif
+
+#else
+				//printf("\tCG solver with fp32.\n");
+				//updateXWithCGHost(tt, &XT[batch_offset*f], &ythetaT[batch_offset*f], batch_size, f, CG_ITER);
+				updateXWithCGHost(d_xtxs, &d_UT[m_batch_offset * f], &d_VTRT[m_batch_offset * f], m_batch_size, f, CG_ITER);
+
+#ifdef USE_LOGGER
+				g_logger.log("CG solver: FP32 U solve done m_batch=" + std::to_string(m_batch), true);
+#endif
+
+#endif	// CUMF_TT_FP16
+
+#else
 				// TODO: single array of max(m, n) allocated in model constructor
 
 				// host array of pointers to each device vtv
@@ -1816,7 +1851,7 @@ void als_model::train() {
 #endif
 
 #ifdef USE_LOGGER
-				g_logger.log("vtvs batched LU factorization done m_batch=" + std::to_string(m_batch), true);
+				g_logger.log("LU solver: vtvs batched LU factorization done m_batch=" + std::to_string(m_batch), true);
 #endif
 
 				int getrs_info;
@@ -1860,7 +1895,7 @@ void als_model::train() {
 				CUDA_CHECK(cudaMemcpy(d_UT + f * m_batch_offset, d_VTRT + f * m_batch_offset, m_batch_size * f * sizeof(d_VTRT[0]), cudaMemcpyDeviceToDevice));
 
 #ifdef USE_LOGGER
-				g_logger.log("U batched solve done m_batch=" + std::to_string(m_batch), true);
+				g_logger.log("LU solver: U batched solve done m_batch=" + std::to_string(m_batch), true);
 #endif
 
 				switch (calculate_vvts_type) {
@@ -1875,6 +1910,7 @@ void als_model::train() {
 				CUDA_CHECK(cudaFree(d_getrf_infos));
 				CUDA_CHECK(cudaFreeHost(h_d_VTRT_ptrs));
 				CUDA_CHECK(cudaFree(d_d_VTRT_ptrs));
+#endif	// USE_CUMF_ALS_CG
 			}	// m_batch loop
 
 			CUDA_CHECK(cudaFree(d_VT_half));
@@ -2097,6 +2133,28 @@ void als_model::train() {
 				//save_device_array_float(d_xtxs, f * f * n_batch_size, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_3_utus_n_batch=" + std::to_string(n_batch));
 #endif
 
+#ifdef USE_CUMF_ALS_CG
+#ifdef CUMF_XX_FP16
+				//printf("\tCG solver with fp16.\n");
+				//updateXWithCGHost_tt_fp16(xx, &thetaT[batch_offset*f], &yTXT[batch_offset*f], batch_size, f, CG_ITER);
+				updateXWithCGHost_tt_fp16(d_xtxs, &d_VT[n_batch_offset * f], &d_UTR[n_batch_offset * f], n_batch_size, f, CG_ITER);
+
+#ifdef USE_LOGGER
+				g_logger.log("CG solver: FP16 V solve done n_batch=" + std::to_string(n_batch), true);
+#endif
+
+#else
+				//printf("\tCG solver with fp32.\n");
+				//updateXWithCGHost(xx, &thetaT[batch_offset*f], &yTXT[batch_offset*f], batch_size, f, CG_ITER);
+				updateXWithCGHost(d_xtxs, &d_VT[n_batch_offset * f], &d_UTR[n_batch_offset * f], n_batch_size, f, CG_ITER);
+
+#ifdef USE_LOGGER
+				g_logger.log("CG solver: FP32 V solve done n_batch=" + std::to_string(n_batch), true);
+#endif
+
+#endif	// CUMF_XX_FP16
+
+#else
 				// TODO: single array of max(m, n) allocated in model constructor
 
 				// host array of pointers to each device utu
@@ -2127,7 +2185,7 @@ void als_model::train() {
 #endif
 
 #ifdef USE_LOGGER
-				g_logger.log("utus batched LU factorization done n_batch=" + std::to_string(n_batch), true);
+				g_logger.log("LU solver: utus batched LU factorization done n_batch=" + std::to_string(n_batch), true);
 #endif
 
 				int getrs_info;
@@ -2171,7 +2229,7 @@ void als_model::train() {
 				CUDA_CHECK(cudaMemcpy(d_VT + f * n_batch_offset, d_UTR + f * n_batch_offset, n_batch_size * f * sizeof(d_UTR[0]), cudaMemcpyDeviceToDevice));
 
 #ifdef USE_LOGGER
-				g_logger.log("V batched solve done n_batch=" + std::to_string(n_batch), true);
+				g_logger.log("LU solver: V batched solve done n_batch=" + std::to_string(n_batch), true);
 #endif
 
 				switch (calculate_vvts_type) {
@@ -2186,6 +2244,7 @@ void als_model::train() {
 				CUDA_CHECK(cudaFree(d_getrf_infos));
 				CUDA_CHECK(cudaFreeHost(h_d_UTR_ptrs));
 				CUDA_CHECK(cudaFree(d_d_UTR_ptrs));
+#endif	// USE_CUMF_ALS_CG
 			}	// n_batch loop
 
 			CUDA_CHECK(cudaFree(d_UT_half));
