@@ -19,6 +19,7 @@ using namespace nvcuda;
 //#define DEBUG_SAVE
 #define CALC_RSME
 
+#ifdef DEBUG_SAVE
 static void save_host_array_float(const float *h_arr, const size_t size, const std::string &path) {
 	std::ofstream out;
 
@@ -44,7 +45,7 @@ static void save_device_array_float(const float *d_arr, const size_t size, const
 
 	CUDA_CHECK(cudaFreeHost(h_arr));
 }
-
+#endif	// DEBUG_SAVE
 
 __global__
 void float2half_array(float *float_arr, half *half_arr, int size) {
@@ -750,6 +751,10 @@ void als_model::train() {
 	for (size_t k = 0; k < m * f; k++)
 		h_UT[k] = 0;//0.1*((float) rand() / (float)RAND_MAX);
 
+#ifdef DEBUG_SAVE
+			save_host_array_float(h_VT, f * n, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_4_VT");
+#endif
+
 	CUDA_CHECK(cudaMemcpy(d_VT, h_VT, n * f * sizeof(h_VT[0]), cudaMemcpyHostToDevice));
 	CUDA_CHECK(cudaMemcpy(d_UT, h_UT, m * f * sizeof(h_UT[0]), cudaMemcpyHostToDevice));
 
@@ -940,6 +945,7 @@ void als_model::train() {
 #endif
 
 #ifdef DEBUG_SAVE
+				//save_device_array_float(d_xtxs + f * f * 5, f * f, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_1_vtv_user_5_m_batch=" + std::to_string(m_batch));
 				//save_device_array_float(d_xtxs + f * f * 11, f * f, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_1_vtv_user_11_m_batch=" + std::to_string(m_batch));
 				//save_device_array_float(d_xtxs + f * f * 12, f * f, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_1_vtv_user_12_m_batch=" + std::to_string(m_batch));
 				//save_device_array_float(d_xtxs + f * f * 13, f * f, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_1_vtv_user_13_m_batch=" + std::to_string(m_batch));
