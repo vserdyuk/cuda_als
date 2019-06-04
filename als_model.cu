@@ -21,7 +21,7 @@ using namespace nvcuda;
 
 #define FIND_NAN
 //#define DEBUG_SAVE
-#define CALC_RSME
+//#define CALC_ITER_RMSE
 
 #ifdef DEBUG_SAVE
 static void save_host_array_float(const float *h_arr, const size_t size, const std::string &path) {
@@ -1716,6 +1716,50 @@ void als_model::LU_solve_V(int n_batch_size, int n_batch_offset) {
 	CUDA_CHECK(cudaFree(d_d_UTR_ptrs));
 }
 
+float als_model::rsme_train() {
+	float *d_err_arr = 0;
+	int err_size = 1000;
+	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_err_arr, err_size * sizeof(d_err_arr[0])));
+
+	CUDA_CHECK(cudaMemset(d_err_arr, 0, err_size * sizeof(float)));
+
+	calculate_square_error<<<(train_ratings.val_cnt - 1) / 256 + 1, 256>>>(train_ratings.d_csr_coo_vals, train_ratings.d_coo_row_idxs,
+			train_ratings.d_csr_coo_col_idxs, train_ratings.val_cnt, d_UT, d_VT, f, d_err_arr, err_size
+	);
+
+	float square_err_train = 0;
+
+	CUBLAS_CHECK(cublasSasum(cublas_handle, err_size, d_err_arr, 1, &square_err_train));
+
+	CUDA_CHECK(cudaDeviceSynchronize());
+
+	CUDA_CHECK(cudaFree(d_err_arr));
+
+	return sqrt(square_err_train / train_ratings.val_cnt);
+}
+
+float als_model::rsme_test() {
+	float *d_err_arr = 0;
+	int err_size = 1000;
+	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_err_arr, err_size * sizeof(d_err_arr[0])));
+
+	CUDA_CHECK(cudaMemset(d_err_arr, 0, err_size * sizeof(float)));
+
+	calculate_square_error<<<(test_ratings.val_cnt - 1) / 256 + 1, 256>>>(test_ratings.d_csr_coo_vals, test_ratings.d_coo_row_idxs,
+			test_ratings.d_csr_coo_col_idxs, test_ratings.val_cnt, d_UT, d_VT, f, d_err_arr, err_size
+	);
+
+	float square_err_test = 0;
+
+	CUBLAS_CHECK(cublasSasum(cublas_handle, err_size, d_err_arr, 1, &square_err_test));
+
+	CUDA_CHECK(cudaDeviceSynchronize());
+
+	CUDA_CHECK(cudaFree(d_err_arr));
+
+	return sqrt(square_err_test / test_ratings.val_cnt);
+}
+
 void als_model::train() {
 
 #ifdef USE_LOGGER
@@ -2219,47 +2263,12 @@ void als_model::train() {
 #endif
 		}	// update V block
 
-#ifdef CALC_RSME
-
-		float *d_err_arr = 0;
-		int err_size = 1000;
-		CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_err_arr, err_size * sizeof(d_err_arr[0])));
-
-		CUDA_CHECK(cudaMemset(d_err_arr, 0, err_size * sizeof(float)));
-
-		calculate_square_error<<<(train_ratings.val_cnt - 1) / 256 + 1, 256>>>(train_ratings.d_csr_coo_vals, train_ratings.d_coo_row_idxs,
-				train_ratings.d_csr_coo_col_idxs, train_ratings.val_cnt, d_UT, d_VT, f, d_err_arr, err_size
-		);
-
-		float square_err_train = 0;
-
-		CUBLAS_CHECK(cublasSasum(cublas_handle, err_size, d_err_arr, 1, &square_err_train));
-
-		CUDA_CHECK(cudaDeviceSynchronize());
-
-#ifdef USE_LOGGER
-		g_logger.log("train root-mean-square error: " + std::to_string(sqrt(square_err_train / train_ratings.val_cnt)), true);
+#if defined(CALC_ITER_RMSE) && defined(USE_LOGGER)
+		if(it < iters - 1) {
+			//g_logger.log("RMSE train: " + std::to_string(rsme_train()), true);
+			g_logger.log("RMSE test: " + std::to_string(rsme_test()), true);
+		}
 #endif
-
-		CUDA_CHECK(cudaMemset(d_err_arr, 0, err_size * sizeof(d_err_arr[0])));
-
-		calculate_square_error<<<(test_ratings.val_cnt - 1) / 256 + 1, 256>>>(test_ratings.d_csr_coo_vals, test_ratings.d_coo_row_idxs,
-				test_ratings.d_csr_coo_col_idxs, test_ratings.val_cnt, d_UT, d_VT, f, d_err_arr, err_size
-		);
-
-		float square_err_test = 0;
-
-		CUBLAS_CHECK(cublasSasum(cublas_handle, err_size, d_err_arr, 1, &square_err_test));
-
-		CUDA_CHECK(cudaDeviceSynchronize());
-
-#ifdef USE_LOGGER
-		g_logger.log("test root-mean-square error: " + std::to_string(sqrt(square_err_test / test_ratings.val_cnt)), true);
-#endif
-
-		CUDA_CHECK(cudaFree(d_err_arr));
-
-#endif	// CALC_RSME
 	}	// iters loop
 
 #ifdef USE_LOGGER

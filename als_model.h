@@ -37,6 +37,9 @@ struct als_model {
 
 	void train();
 
+	float rsme_train();
+	float rsme_test();
+
 	device_sparse_matrix train_ratings;
 	device_sparse_matrix test_ratings;
 

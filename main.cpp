@@ -102,6 +102,9 @@ int main(int argc, char **argv) {
 #ifdef USE_LOGGER
 		// MF_MODEL_TRAINING event finishes after model (user and item factors) calculation before its saving to disk
 		g_logger.event_finished(logger::EVENT_TYPE::MF_MODEL_TRAINING, true);
+
+		//g_logger.log("final RMSE train: " + std::to_string(model.rsme_train()), true);
+		g_logger.log("final RMSE test: " + std::to_string(model.rsme_test()), true);
 #endif
 
 	}
