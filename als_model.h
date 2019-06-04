@@ -9,7 +9,7 @@
 #include "cuda_sparse_matrix.h"
 
 struct als_model {
-	enum class CALCULATE_VVTS_TYPE {
+	enum class CALCULATE_VTVS_TYPE {
 		SIMPLE = 0,
 		SMEM_ROW_MAJOR,
 		SMEM_COL_MAJOR,
@@ -21,7 +21,7 @@ struct als_model {
 	};
 
 	als_model(cuda_sparse_matrix &train_ratings, cuda_sparse_matrix &test_ratings, int f,
-			float lambda, int iters, CALCULATE_VVTS_TYPE calculate_vvts_type, int smem_col_cnt,
+			float lambda, int iters, CALCULATE_VTVS_TYPE calculate_vtvs_type, int smem_col_cnt,
 			int m_batches, int n_batches
 	);
 	~als_model();
@@ -56,11 +56,11 @@ struct als_model {
 	cusparseHandle_t cusparse_handle;
 	cublasHandle_t cublas_handle;
 
-	CALCULATE_VVTS_TYPE calculate_vvts_type;
+	CALCULATE_VTVS_TYPE calculate_vtvs_type;
 
 	int smem_col_cnt;
 
-	static std::string to_string(CALCULATE_VVTS_TYPE calculate_vvts_type);
+	static std::string to_string(CALCULATE_VTVS_TYPE calculate_vtvs_type);
 };
 
 #endif // ALS_MODEL_H
