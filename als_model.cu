@@ -2285,3 +2285,25 @@ void als_model::train() {
 #endif
 }
 
+
+
+// for cumf_sgd rsme test
+void als_model::save_libmf(const char *path) {
+	float train_ratings_sum = 0;
+	CUBLAS_CHECK(cublasSasum(cublas_handle, train_ratings.val_cnt, train_ratings.d_csr_coo_vals, 1, &train_ratings_sum));
+	float train_ratings_avg = train_ratings_sum / train_ratings.val_cnt;
+
+	std::ofstream out;
+	out.open(path, std::ios::binary);
+
+	int loss_function = 0;
+	out.write(reinterpret_cast<char *>(&loss_function), sizeof(loss_function));
+
+	out.write(reinterpret_cast<char *>(&m), sizeof(m));
+	out.write(reinterpret_cast<char *>(&n), sizeof(n));
+	out.write(reinterpret_cast<char *>(&f), sizeof(f));
+	out.write(reinterpret_cast<char *>(&train_ratings_avg), sizeof(train_ratings_avg));
+
+	out.write(reinterpret_cast<char *>(h_UT), f * m * sizeof(h_UT[0]));
+	out.write(reinterpret_cast<char *>(h_VT), f * n * sizeof(h_VT[0]));
+}

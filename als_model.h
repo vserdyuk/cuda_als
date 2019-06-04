@@ -40,6 +40,8 @@ struct als_model {
 	float rsme_train();
 	float rsme_test();
 
+	void save_libmf(const char *path);
+
 	device_sparse_matrix train_ratings;
 	device_sparse_matrix test_ratings;
 

@@ -107,6 +107,12 @@ int main(int argc, char **argv) {
 		g_logger.log("final RMSE test: " + std::to_string(model.rsme_test()), true);
 #endif
 
+		if(als_runs == 1) {
+			//model.save_libmf("/home/vladimir/src/cuda_als/data/netflix/netflix.model");
+			model.save_libmf("/home/vladimir/src/cumf_sgd/data/netflix/netflix_train.bin.model");
+
+			g_logger.log("saved model in cumf_sgd libmf format", true);
+		}
 	}
 
 #ifdef USE_LOGGER
