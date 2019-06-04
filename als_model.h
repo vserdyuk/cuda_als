@@ -26,7 +26,7 @@ struct als_model {
 		CUMF_ALS_CG_FP32
 	};
 
-	als_model(cuda_sparse_matrix &train_ratings, cuda_sparse_matrix &test_ratings, int f,
+	als_model(host_sparse_matrix &host_train_ratings, host_sparse_matrix &host_test_ratings, int f,
 			float lambda, int iters, CALCULATE_VTVS_TYPE calculate_vtvs_type, SOLVE_TYPE solve_type,
 			int smem_col_cnt, int m_batches, int n_batches
 	);
@@ -37,8 +37,8 @@ struct als_model {
 
 	void train();
 
-	cuda_sparse_matrix &train_ratings;
-	cuda_sparse_matrix &test_ratings;
+	device_sparse_matrix train_ratings;
+	device_sparse_matrix test_ratings;
 
 	int m;			// number of users
 	int n;			// number of items

@@ -1514,10 +1514,10 @@ std::string als_model::to_string(SOLVE_TYPE solve_type) {
 	}
 }
 
-als_model::als_model(cuda_sparse_matrix &train_ratings, cuda_sparse_matrix &test_ratings, int f,
+als_model::als_model(host_sparse_matrix &host_train_ratings, host_sparse_matrix &host_test_ratings, int f,
 		float lambda, int iters, CALCULATE_VTVS_TYPE calculate_vtvs_type, SOLVE_TYPE solve_type,
 		int smem_col_cnt, int m_batches, int n_batches):
-		train_ratings(train_ratings), test_ratings(test_ratings), f(f), lambda(lambda), iters(iters),
+		train_ratings(host_train_ratings), test_ratings(host_test_ratings), f(f), lambda(lambda), iters(iters),
 		calculate_vtvs_type(calculate_vtvs_type), solve_type(solve_type), smem_col_cnt(smem_col_cnt),
 		m_batches(m_batches), n_batches(n_batches) {
 	m = train_ratings.row_cnt;

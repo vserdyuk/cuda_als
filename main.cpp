@@ -67,19 +67,17 @@ int main(int argc, char **argv) {
 
 	cudaSetDevice(CUDA_DEVICE_ID);
 
-	cuda_sparse_matrix train_ratings(m, n, nnz_train);
-	train_ratings.load_csc(data_folder + "/R_train_csc.data.bin", data_folder + "/R_train_csc.indices.bin", data_folder + "/R_train_csc.indptr.bin");
-	train_ratings.load_csr(data_folder + "/R_train_csr.data.bin", data_folder + "/R_train_csr.indptr.bin", data_folder + "/R_train_csr.indices.bin");
-	train_ratings.load_coo(data_folder + "/R_train_csr.data.bin", data_folder + "/R_train_coo.row.bin", data_folder + "/R_train_csr.indices.bin");
+	host_sparse_matrix host_train_ratings(m, n, nnz_train);
+	host_train_ratings.load_csc(data_folder + "/R_train_csc.data.bin", data_folder + "/R_train_csc.indices.bin", data_folder + "/R_train_csc.indptr.bin");
+	host_train_ratings.load_csr(data_folder + "/R_train_csr.data.bin", data_folder + "/R_train_csr.indptr.bin", data_folder + "/R_train_csr.indices.bin");
+	host_train_ratings.load_coo(data_folder + "/R_train_csr.data.bin", data_folder + "/R_train_coo.row.bin", data_folder + "/R_train_csr.indices.bin");
 
-	cuda_sparse_matrix test_ratings(m, n, nnz_test);
+	host_sparse_matrix host_test_ratings(m, n, nnz_test);
 
-	test_ratings.load_coo(data_folder + "/R_test_coo.data.bin", data_folder + "/R_test_coo.row.bin", data_folder + "/R_test_coo.col.bin");
-
-	als_model model(train_ratings, test_ratings, f, lambda, als_iters, als_calculate_vtvs_type, als_solve_type, smem_col_cnt, m_batches, n_batches);
+	host_test_ratings.load_coo(data_folder + "/R_test_coo.data.bin", data_folder + "/R_test_coo.row.bin", data_folder + "/R_test_coo.col.bin");
 
 #ifdef USE_LOGGER
-	g_logger.log("als model constructor done", true);
+	g_logger.log("host train and test ratings loaded", true);
 #endif
 
 	// run in loop to measure performance
@@ -88,6 +86,7 @@ int main(int argc, char **argv) {
 #ifdef USE_LOGGER
 		g_logger.run_iter = i + 1;
 #endif
+		als_model model(host_train_ratings, host_test_ratings, f, lambda, als_iters, als_calculate_vtvs_type, als_solve_type, smem_col_cnt, m_batches, n_batches);
 		model.train();
 	}
 
