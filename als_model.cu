@@ -12,12 +12,8 @@ using namespace nvcuda;
 #include "logger.h"
 #endif
 
-//#define USE_CUMF_ALS_CG
-
-#ifdef USE_CUMF_ALS_CG
 #include "cumf_als_cg/cg.h"
 #define CG_ITER 6
-#endif
 
 #include <fstream>
 #include <limits>
@@ -1509,12 +1505,21 @@ std::string als_model::to_string(CALCULATE_VTVS_TYPE calculate_vtvs_type) {
 	}
 }
 
+std::string als_model::to_string(SOLVE_TYPE solve_type) {
+	switch(solve_type) {
+		case SOLVE_TYPE::LU: return "LU";
+		case SOLVE_TYPE::CUMF_ALS_CG_FP16: return "CUMF_ALS_CG_FP16";
+		case SOLVE_TYPE::CUMF_ALS_CG_FP32: return "CUMF_ALS_CG_FP32";
+		default: return "UNKNOWN";
+	}
+}
+
 als_model::als_model(cuda_sparse_matrix &train_ratings, cuda_sparse_matrix &test_ratings, int f,
-		float lambda, int iters, CALCULATE_VTVS_TYPE calculate_vtvs_type, int smem_col_cnt,
-		int m_batches, int n_batches):
+		float lambda, int iters, CALCULATE_VTVS_TYPE calculate_vtvs_type, SOLVE_TYPE solve_type,
+		int smem_col_cnt, int m_batches, int n_batches):
 		train_ratings(train_ratings), test_ratings(test_ratings), f(f), lambda(lambda), iters(iters),
-		calculate_vtvs_type(calculate_vtvs_type), smem_col_cnt(smem_col_cnt), m_batches(m_batches),
-		n_batches(n_batches) {
+		calculate_vtvs_type(calculate_vtvs_type), solve_type(solve_type), smem_col_cnt(smem_col_cnt),
+		m_batches(m_batches), n_batches(n_batches) {
 	m = train_ratings.row_cnt;
 	n = train_ratings.col_cnt;
 
@@ -1559,14 +1564,162 @@ als_model::~als_model() {
 	CUBLAS_CHECK(cublasDestroy(cublas_handle));
 }
 
+void als_model::LU_solve_U(int m_batch_size, int m_batch_offset) {
+	// TODO: single array of max(m, n) allocated in model constructor
+
+	// host array of pointers to each device vtv
+	float **h_d_vtvs_ptrs;
+
+	CUDA_CHECK(cudaMallocHost((void **)&h_d_vtvs_ptrs, m_batch_size * sizeof(h_d_vtvs_ptrs[0])));
+
+	for(size_t i = 0; i < m_batch_size; ++i) {
+		h_d_vtvs_ptrs[i] = &d_xtxs[i * f * f];
+	}
+
+	// device array of pointers to each device vtv
+	float **d_d_vtvs_ptrs;
+
+	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_vtvs_ptrs, m_batch_size * sizeof(d_d_vtvs_ptrs[0])));
+	CUDA_CHECK(cudaMemcpy(d_d_vtvs_ptrs, h_d_vtvs_ptrs, m_batch_size * sizeof(h_d_vtvs_ptrs[0]), cudaMemcpyHostToDevice));
+
+	// required by cublasSgetrfBatched but not used for now
+	int *d_getrf_infos;
+
+	CUDA_CHECK(CUDA_MALLOC_DEVICE(&d_getrf_infos, m_batch_size * sizeof(d_getrf_infos[0])));
+
+	// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
+	CUBLAS_CHECK(cublasSgetrfBatched(cublas_handle, f, d_d_vtvs_ptrs, f, NULL, d_getrf_infos, m_batch_size));
+
+	int getrs_info;
+
+	// host array of pointers to each device VTRT column
+	float **h_d_VTRT_ptrs;
+
+	CUDA_CHECK(cudaMallocHost((void **)&h_d_VTRT_ptrs, m_batch_size * sizeof(h_d_VTRT_ptrs[0])));
+
+	for(size_t i = 0; i < m_batch_size; ++i) {
+		h_d_VTRT_ptrs[i] = &d_VTRT[(m_batch_offset + i) * f];
+	}
+
+	// device array of pointers to each device VTRT column
+	float **d_d_VTRT_ptrs;
+
+	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_VTRT_ptrs, m_batch_size * sizeof(d_d_VTRT_ptrs[0])));
+	CUDA_CHECK(cudaMemcpy(d_d_VTRT_ptrs, h_d_VTRT_ptrs, m_batch_size * sizeof(h_d_VTRT_ptrs[0]), cudaMemcpyHostToDevice));
+
+	// d_VTRT gets overwritten by result (VT)
+	// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
+	CUBLAS_CHECK(cublasSgetrsBatched(
+			cublas_handle,
+			CUBLAS_OP_N,
+			f,
+			1,
+			(const float * const *)d_d_vtvs_ptrs,
+			f,
+			nullptr,
+			(float * const *)d_d_VTRT_ptrs,
+			f,
+			&getrs_info,
+			m_batch_size
+	));
+
+	// write result
+	CUDA_CHECK(cudaMemcpy(d_UT + f * m_batch_offset, d_VTRT + f * m_batch_offset, m_batch_size * f * sizeof(d_VTRT[0]), cudaMemcpyDeviceToDevice));
+
+	switch (calculate_vtvs_type) {
+	case CALCULATE_VTVS_TYPE::SMEM_ROW_MAJOR:
+	case CALCULATE_VTVS_TYPE::SMEM_COL_MAJOR:
+	case CALCULATE_VTVS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
+		CUDA_CHECK(cudaMemset(d_xtxs, 0, f * f * m_batch_size * sizeof(d_xtxs[0])));
+	}
+
+	CUDA_CHECK(cudaFreeHost(h_d_vtvs_ptrs));
+	CUDA_CHECK(cudaFree(d_d_vtvs_ptrs));
+	CUDA_CHECK(cudaFree(d_getrf_infos));
+	CUDA_CHECK(cudaFreeHost(h_d_VTRT_ptrs));
+	CUDA_CHECK(cudaFree(d_d_VTRT_ptrs));
+}
+
+void als_model::LU_solve_V(int n_batch_size, int n_batch_offset) {
+	// TODO: single array of max(m, n) allocated in model constructor
+
+	// host array of pointers to each device utu
+	float **h_d_utus_ptrs;
+
+	CUDA_CHECK(cudaMallocHost((void **)&h_d_utus_ptrs, n_batch_size * sizeof(h_d_utus_ptrs[0])));
+
+	for(size_t i = 0; i < n_batch_size; ++i) {
+		h_d_utus_ptrs[i] = &d_xtxs[i * f * f];
+	}
+
+	// device array of pointers to each device utu
+	float **d_d_utus_ptrs;
+
+	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_utus_ptrs, n_batch_size * sizeof(d_d_utus_ptrs[0])));
+	CUDA_CHECK(cudaMemcpy(d_d_utus_ptrs, h_d_utus_ptrs, n_batch_size * sizeof(h_d_utus_ptrs[0]), cudaMemcpyHostToDevice));
+
+	// required by cublasSgetrfBatched but not used for now
+	int *d_getrf_infos;
+
+	CUDA_CHECK(CUDA_MALLOC_DEVICE(&d_getrf_infos, n_batch_size * sizeof(d_getrf_infos[0])));
+
+	// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
+	CUBLAS_CHECK(cublasSgetrfBatched(cublas_handle, f, d_d_utus_ptrs, f, NULL, d_getrf_infos, n_batch_size));
+
+	int getrs_info;
+
+	// host array of pointers to each device UTR column
+	float **h_d_UTR_ptrs;
+
+	CUDA_CHECK(cudaMallocHost((void **)&h_d_UTR_ptrs, n_batch_size * sizeof(h_d_UTR_ptrs[0])));
+
+	for(size_t i = 0; i < n_batch_size; ++i) {
+		h_d_UTR_ptrs[i] = &d_UTR[(n_batch_offset + i) * f];
+	}
+
+	// device array of pointers to each device UTR column
+	float **d_d_UTR_ptrs;
+
+	CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_UTR_ptrs, n_batch_size * sizeof(d_d_utus_ptrs[0])));
+	CUDA_CHECK(cudaMemcpy(d_d_UTR_ptrs, h_d_UTR_ptrs, n_batch_size * sizeof(h_d_UTR_ptrs[0]), cudaMemcpyHostToDevice));
+
+	// d_UTR gets overwritten by result (UT)
+	// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
+	CUBLAS_CHECK(cublasSgetrsBatched(
+			cublas_handle,
+			CUBLAS_OP_N,
+			f,
+			1,
+			(const float * const *)d_d_utus_ptrs,
+			f,
+			nullptr,
+			(float * const *)d_d_UTR_ptrs,
+			f,
+			&getrs_info,
+			n_batch_size
+	));
+
+	// write result
+	CUDA_CHECK(cudaMemcpy(d_VT + f * n_batch_offset, d_UTR + f * n_batch_offset, n_batch_size * f * sizeof(d_UTR[0]), cudaMemcpyDeviceToDevice));
+
+	switch (calculate_vtvs_type) {
+	case CALCULATE_VTVS_TYPE::SMEM_ROW_MAJOR:
+	case CALCULATE_VTVS_TYPE::SMEM_COL_MAJOR:
+	case CALCULATE_VTVS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
+		CUDA_CHECK(cudaMemset(d_xtxs, 0, f * f * n_batch_size * sizeof(d_xtxs[0])));
+	}
+
+	CUDA_CHECK(cudaFreeHost(h_d_utus_ptrs));
+	CUDA_CHECK(cudaFree(d_d_utus_ptrs));
+	CUDA_CHECK(cudaFree(d_getrf_infos));
+	CUDA_CHECK(cudaFreeHost(h_d_UTR_ptrs));
+	CUDA_CHECK(cudaFree(d_d_UTR_ptrs));
+}
+
 void als_model::train() {
 
 #ifdef USE_LOGGER
-#ifdef USE_CUMF_ALS_CG
-	g_logger.log("als model training started USE_CUMF_ALS_CG=true", true);
-#else
-	g_logger.log("als model training started USE_CUMF_ALS_CG=false", true);
-#endif
+	g_logger.log("als model training started", true);
 #endif
 
 	unsigned int seed = 0;
@@ -1798,119 +1951,22 @@ void als_model::train() {
 				//save_device_array_float(d_xtxs, f * f * m_batch_size, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_1_vtvs_m_batch=" + std::to_string(m_batch));
 #endif
 
-#ifdef USE_CUMF_ALS_CG
-#ifdef CUMF_TT_FP16
-				//cg_iter = als_iter: solve more carefully in later ALS iterations
-				//printf("\tCG solver with fp16.\n");
-				//updateXWithCGHost_tt_fp16(tt, &XT[batch_offset*f], &ythetaT[batch_offset*f], batch_size, f, CG_ITER);
-				updateXWithCGHost_tt_fp16(d_xtxs, &d_UT[m_batch_offset * f], &d_VTRT[m_batch_offset * f], m_batch_size, f, CG_ITER);
-
-#ifdef USE_LOGGER
-				g_logger.log("CG solver: FP16 U solve done m_batch=" + std::to_string(m_batch), true);
-#endif
-
-#else
-				//printf("\tCG solver with fp32.\n");
-				//updateXWithCGHost(tt, &XT[batch_offset*f], &ythetaT[batch_offset*f], batch_size, f, CG_ITER);
-				updateXWithCGHost(d_xtxs, &d_UT[m_batch_offset * f], &d_VTRT[m_batch_offset * f], m_batch_size, f, CG_ITER);
-
-#ifdef USE_LOGGER
-				g_logger.log("CG solver: FP32 U solve done m_batch=" + std::to_string(m_batch), true);
-#endif
-
-#endif	// CUMF_TT_FP16
-
-#else
-				// TODO: single array of max(m, n) allocated in model constructor
-
-				// host array of pointers to each device vtv
-				float **h_d_vtvs_ptrs;
-
-				CUDA_CHECK(cudaMallocHost((void **)&h_d_vtvs_ptrs, m_batch_size * sizeof(h_d_vtvs_ptrs[0])));
-
-				for(size_t i = 0; i < m_batch_size; ++i) {
-					h_d_vtvs_ptrs[i] = &d_xtxs[i * f * f];
+				switch (solve_type) {
+					case SOLVE_TYPE::CUMF_ALS_CG_FP16:
+						updateXWithCGHost_tt_fp16(d_xtxs, &d_UT[m_batch_offset * f], &d_VTRT[m_batch_offset * f], m_batch_size, f, CG_ITER);
+						break;
+					case SOLVE_TYPE::CUMF_ALS_CG_FP32:
+						updateXWithCGHost(d_xtxs, &d_UT[m_batch_offset * f], &d_VTRT[m_batch_offset * f], m_batch_size, f, CG_ITER);
+						break;
+					case SOLVE_TYPE::LU:
+					default:
+						LU_solve_U(m_batch_size, m_batch_offset);
 				}
 
-				// device array of pointers to each device vtv
-				float **d_d_vtvs_ptrs;
-
-				CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_vtvs_ptrs, m_batch_size * sizeof(d_d_vtvs_ptrs[0])));
-				CUDA_CHECK(cudaMemcpy(d_d_vtvs_ptrs, h_d_vtvs_ptrs, m_batch_size * sizeof(h_d_vtvs_ptrs[0]), cudaMemcpyHostToDevice));
-
-				// required by cublasSgetrfBatched but not used for now
-				int *d_getrf_infos;
-
-				CUDA_CHECK(CUDA_MALLOC_DEVICE(&d_getrf_infos, m_batch_size * sizeof(d_getrf_infos[0])));
-
-				// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
-				CUBLAS_CHECK(cublasSgetrfBatched(cublas_handle, f, d_d_vtvs_ptrs, f, NULL, d_getrf_infos, m_batch_size));
-
-#if defined (DEBUG) || defined(USE_LOGGER)
-				CUDA_CHECK(cudaDeviceSynchronize());
-#endif
-
 #ifdef USE_LOGGER
-				g_logger.log("LU solver: vtvs batched LU factorization done m_batch=" + std::to_string(m_batch), true);
+						g_logger.log("U solver done type=" + to_string(solve_type) + " m_batch=" + std::to_string(m_batch), true);
 #endif
 
-				int getrs_info;
-
-				// host array of pointers to each device VTRT column
-				float **h_d_VTRT_ptrs;
-
-				CUDA_CHECK(cudaMallocHost((void **)&h_d_VTRT_ptrs, m_batch_size * sizeof(h_d_VTRT_ptrs[0])));
-
-				for(size_t i = 0; i < m_batch_size; ++i) {
-					h_d_VTRT_ptrs[i] = &d_VTRT[(m_batch_offset + i) * f];
-				}
-
-				// device array of pointers to each device VTRT column
-				float **d_d_VTRT_ptrs;
-
-				CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_VTRT_ptrs, m_batch_size * sizeof(d_d_VTRT_ptrs[0])));
-				CUDA_CHECK(cudaMemcpy(d_d_VTRT_ptrs, h_d_VTRT_ptrs, m_batch_size * sizeof(h_d_VTRT_ptrs[0]), cudaMemcpyHostToDevice));
-
-				// d_VTRT gets overwritten by result (VT)
-				// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
-				CUBLAS_CHECK(cublasSgetrsBatched(
-						cublas_handle,
-						CUBLAS_OP_N,
-						f,
-						1,
-						(const float * const *)d_d_vtvs_ptrs,
-						f,
-						nullptr,
-						(float * const *)d_d_VTRT_ptrs,
-						f,
-						&getrs_info,
-						m_batch_size
-				));
-
-#if defined (DEBUG) || defined(USE_LOGGER)
-				CUDA_CHECK(cudaDeviceSynchronize());
-#endif
-
-				// write result
-				CUDA_CHECK(cudaMemcpy(d_UT + f * m_batch_offset, d_VTRT + f * m_batch_offset, m_batch_size * f * sizeof(d_VTRT[0]), cudaMemcpyDeviceToDevice));
-
-#ifdef USE_LOGGER
-				g_logger.log("LU solver: U batched solve done m_batch=" + std::to_string(m_batch), true);
-#endif
-
-				switch (calculate_vtvs_type) {
-				case CALCULATE_VTVS_TYPE::SMEM_ROW_MAJOR:
-				case CALCULATE_VTVS_TYPE::SMEM_COL_MAJOR:
-				case CALCULATE_VTVS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
-					CUDA_CHECK(cudaMemset(d_xtxs, 0, f * f * m_batch_size * sizeof(d_xtxs[0])));
-				}
-
-				CUDA_CHECK(cudaFreeHost(h_d_vtvs_ptrs));
-				CUDA_CHECK(cudaFree(d_d_vtvs_ptrs));
-				CUDA_CHECK(cudaFree(d_getrf_infos));
-				CUDA_CHECK(cudaFreeHost(h_d_VTRT_ptrs));
-				CUDA_CHECK(cudaFree(d_d_VTRT_ptrs));
-#endif	// USE_CUMF_ALS_CG
 			}	// m_batch loop
 
 			CUDA_CHECK(cudaFree(d_VT_half));
@@ -2133,134 +2189,35 @@ void als_model::train() {
 				//save_device_array_float(d_xtxs, f * f * n_batch_size, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_3_utus_n_batch=" + std::to_string(n_batch));
 #endif
 
-#ifdef USE_CUMF_ALS_CG
-#ifdef CUMF_XX_FP16
-				//printf("\tCG solver with fp16.\n");
-				//updateXWithCGHost_tt_fp16(xx, &thetaT[batch_offset*f], &yTXT[batch_offset*f], batch_size, f, CG_ITER);
-				updateXWithCGHost_tt_fp16(d_xtxs, &d_VT[n_batch_offset * f], &d_UTR[n_batch_offset * f], n_batch_size, f, CG_ITER);
-
-#ifdef USE_LOGGER
-				g_logger.log("CG solver: FP16 V solve done n_batch=" + std::to_string(n_batch), true);
-#endif
-
-#else
-				//printf("\tCG solver with fp32.\n");
-				//updateXWithCGHost(xx, &thetaT[batch_offset*f], &yTXT[batch_offset*f], batch_size, f, CG_ITER);
-				updateXWithCGHost(d_xtxs, &d_VT[n_batch_offset * f], &d_UTR[n_batch_offset * f], n_batch_size, f, CG_ITER);
-
-#ifdef USE_LOGGER
-				g_logger.log("CG solver: FP32 V solve done n_batch=" + std::to_string(n_batch), true);
-#endif
-
-#endif	// CUMF_XX_FP16
-
-#else
-				// TODO: single array of max(m, n) allocated in model constructor
-
-				// host array of pointers to each device utu
-				float **h_d_utus_ptrs;
-
-				CUDA_CHECK(cudaMallocHost((void **)&h_d_utus_ptrs, n_batch_size * sizeof(h_d_utus_ptrs[0])));
-
-				for(size_t i = 0; i < n_batch_size; ++i) {
-					h_d_utus_ptrs[i] = &d_xtxs[i * f * f];
+				switch (solve_type) {
+					case SOLVE_TYPE::CUMF_ALS_CG_FP16:
+						updateXWithCGHost_tt_fp16(d_xtxs, &d_VT[n_batch_offset * f], &d_UTR[n_batch_offset * f], n_batch_size, f, CG_ITER);
+						break;
+					case SOLVE_TYPE::CUMF_ALS_CG_FP32:
+						updateXWithCGHost(d_xtxs, &d_VT[n_batch_offset * f], &d_UTR[n_batch_offset * f], n_batch_size, f, CG_ITER);
+						break;
+					case SOLVE_TYPE::LU:
+					default:
+						LU_solve_V(n_batch_size, n_batch_offset);
 				}
 
-				// device array of pointers to each device utu
-				float **d_d_utus_ptrs;
-
-				CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_utus_ptrs, n_batch_size * sizeof(d_d_utus_ptrs[0])));
-				CUDA_CHECK(cudaMemcpy(d_d_utus_ptrs, h_d_utus_ptrs, n_batch_size * sizeof(h_d_utus_ptrs[0]), cudaMemcpyHostToDevice));
-
-				// required by cublasSgetrfBatched but not used for now
-				int *d_getrf_infos;
-
-				CUDA_CHECK(CUDA_MALLOC_DEVICE(&d_getrf_infos, n_batch_size * sizeof(d_getrf_infos[0])));
-
-				// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
-				CUBLAS_CHECK(cublasSgetrfBatched(cublas_handle, f, d_d_utus_ptrs, f, NULL, d_getrf_infos, n_batch_size));
-
-#if defined (DEBUG) || defined(USE_LOGGER)
-				CUDA_CHECK(cudaDeviceSynchronize());
-#endif
-
 #ifdef USE_LOGGER
-				g_logger.log("LU solver: utus batched LU factorization done n_batch=" + std::to_string(n_batch), true);
+						g_logger.log("V solver done type=" + to_string(solve_type) + " n_batch=" + std::to_string(n_batch), true);
 #endif
 
-				int getrs_info;
-
-				// host array of pointers to each device UTR column
-				float **h_d_UTR_ptrs;
-
-				CUDA_CHECK(cudaMallocHost((void **)&h_d_UTR_ptrs, n_batch_size * sizeof(h_d_UTR_ptrs[0])));
-
-				for(size_t i = 0; i < n_batch_size; ++i) {
-					h_d_UTR_ptrs[i] = &d_UTR[(n_batch_offset + i) * f];
-				}
-
-				// device array of pointers to each device UTR column
-				float **d_d_UTR_ptrs;
-
-				CUDA_CHECK(CUDA_MALLOC_DEVICE((void **)&d_d_UTR_ptrs, n_batch_size * sizeof(d_d_utus_ptrs[0])));
-				CUDA_CHECK(cudaMemcpy(d_d_UTR_ptrs, h_d_UTR_ptrs, n_batch_size * sizeof(h_d_UTR_ptrs[0]), cudaMemcpyHostToDevice));
-
-				// d_UTR gets overwritten by result (UT)
-				// stepping here in Nsight debug session causes GDB crash so don't put breakpoints here
-				CUBLAS_CHECK(cublasSgetrsBatched(
-						cublas_handle,
-						CUBLAS_OP_N,
-						f,
-						1,
-						(const float * const *)d_d_utus_ptrs,
-						f,
-						nullptr,
-						(float * const *)d_d_UTR_ptrs,
-						f,
-						&getrs_info,
-						n_batch_size
-				));
-
-#if defined (DEBUG) || defined(USE_LOGGER)
-				CUDA_CHECK(cudaDeviceSynchronize());
-#endif
-
-				// write result
-				CUDA_CHECK(cudaMemcpy(d_VT + f * n_batch_offset, d_UTR + f * n_batch_offset, n_batch_size * f * sizeof(d_UTR[0]), cudaMemcpyDeviceToDevice));
-
-#ifdef USE_LOGGER
-				g_logger.log("LU solver: V batched solve done n_batch=" + std::to_string(n_batch), true);
-#endif
-
-				switch (calculate_vtvs_type) {
-				case CALCULATE_VTVS_TYPE::SMEM_ROW_MAJOR:
-				case CALCULATE_VTVS_TYPE::SMEM_COL_MAJOR:
-				case CALCULATE_VTVS_TYPE::SMEM_COL_MAJOR_TWO_THREADS:
-					CUDA_CHECK(cudaMemset(d_xtxs, 0, f * f * n_batch_size * sizeof(d_xtxs[0])));
-				}
-
-				CUDA_CHECK(cudaFreeHost(h_d_utus_ptrs));
-				CUDA_CHECK(cudaFree(d_d_utus_ptrs));
-				CUDA_CHECK(cudaFree(d_getrf_infos));
-				CUDA_CHECK(cudaFreeHost(h_d_UTR_ptrs));
-				CUDA_CHECK(cudaFree(d_d_UTR_ptrs));
-#endif	// USE_CUMF_ALS_CG
 			}	// n_batch loop
 
 			CUDA_CHECK(cudaFree(d_UT_half));
 
 #ifdef USE_LOGGER
 			g_logger.event_finished(logger::EVENT_TYPE::ALS_UPDATE_V, true);
+			g_logger.event_finished(logger::EVENT_TYPE::ALS_ITER, true);
 #endif
 
 #ifdef DEBUG_SAVE
 			save_device_array_float(d_VT, f * n, "/home/vladimir/src/cuda_als/tmp/run_" + std::to_string(g_logger.run_iter) + "_iter_" + std::to_string(g_logger.als_iter) + "_4_VT");
 #endif
 		}	// update V block
-
-#ifdef USE_LOGGER
-		g_logger.event_finished(logger::EVENT_TYPE::ALS_ITER, true);
-#endif
 
 #ifdef CALC_RSME
 

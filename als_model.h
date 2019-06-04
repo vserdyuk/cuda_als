@@ -20,11 +20,20 @@ struct als_model {
 		SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG
 	};
 
+	enum class SOLVE_TYPE {
+		LU = 0,
+		CUMF_ALS_CG_FP16,
+		CUMF_ALS_CG_FP32
+	};
+
 	als_model(cuda_sparse_matrix &train_ratings, cuda_sparse_matrix &test_ratings, int f,
-			float lambda, int iters, CALCULATE_VTVS_TYPE calculate_vtvs_type, int smem_col_cnt,
-			int m_batches, int n_batches
+			float lambda, int iters, CALCULATE_VTVS_TYPE calculate_vtvs_type, SOLVE_TYPE solve_type,
+			int smem_col_cnt, int m_batches, int n_batches
 	);
 	~als_model();
+
+	void LU_solve_U(int m_batch_size, int m_batch_offset);
+	void LU_solve_V(int n_batch_size, int n_batch_offset);
 
 	void train();
 
@@ -57,10 +66,12 @@ struct als_model {
 	cublasHandle_t cublas_handle;
 
 	CALCULATE_VTVS_TYPE calculate_vtvs_type;
+	SOLVE_TYPE solve_type;
 
 	int smem_col_cnt;
 
 	static std::string to_string(CALCULATE_VTVS_TYPE calculate_vtvs_type);
+	static std::string to_string(SOLVE_TYPE solve_type);
 };
 
 #endif // ALS_MODEL_H

@@ -38,14 +38,18 @@ int main(int argc, char **argv) {
 	//als_model::CALCULATE_VTVS_TYPE als_calculate_vtvs_type = als_model::CALCULATE_VTVS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC;	// easier debugging
 	als_model::CALCULATE_VTVS_TYPE als_calculate_vtvs_type = als_model::CALCULATE_VTVS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG;	// easier debugging
 
+	//als_model::SOLVE_TYPE als_solve_type = static_cast<als_model::SOLVE_TYPE>(atoi(argv[11]));
+	//als_model::SOLVE_TYPE als_solve_type = als_model::SOLVE_TYPE::LU;	// easier debugging
+	als_model::SOLVE_TYPE als_solve_type = als_model::SOLVE_TYPE::CUMF_ALS_CG_FP32;	// easier debugging
+
 	int smem_col_cnt = 32;	// shoud be calculated based on device shared memory sized
 	//int smem_col_cnt = 112;	// shoud be calculated based on device shared memory size
 
-	int m_batches = atoi(argv[11]);
-	int n_batches = atoi(argv[12]);
+	int m_batches = atoi(argv[12]);
+	int n_batches = atoi(argv[13]);
 
 #ifdef USE_LOGGER
-	std::string log_folder = argv[13];
+	std::string log_folder = argv[14];
 
 	std::cout << std::fixed;
 
@@ -54,7 +58,8 @@ int main(int argc, char **argv) {
 
 	ss << "m=" << m << " n=" << n << " f=" << f << " nnz_train=" << nnz_train << " nnz_test=" << nnz_test << " lambda=" << lambda
 			<< " als_iters=" << als_iters << " data_folder=" << data_folder << " als_runs=" << als_runs << " log_folder=" << log_folder
-			<< " als_calculate_vtvs_type=" << als_model::to_string(als_calculate_vtvs_type) << " smem_col_cnt=" << smem_col_cnt
+			<< " als_calculate_vtvs_type=" << als_model::to_string(als_calculate_vtvs_type) << " als_solve_type=" << als_model::to_string(als_solve_type)
+			<< " smem_col_cnt=" << smem_col_cnt
 	;
 
 	g_logger.log(ss.str(), true);
@@ -71,7 +76,7 @@ int main(int argc, char **argv) {
 
 	test_ratings.load_coo(data_folder + "/R_test_coo.data.bin", data_folder + "/R_test_coo.row.bin", data_folder + "/R_test_coo.col.bin");
 
-	als_model model(train_ratings, test_ratings, f, lambda, als_iters, als_calculate_vtvs_type, smem_col_cnt, m_batches, n_batches);
+	als_model model(train_ratings, test_ratings, f, lambda, als_iters, als_calculate_vtvs_type, als_solve_type, smem_col_cnt, m_batches, n_batches);
 
 #ifdef USE_LOGGER
 	g_logger.log("als model constructor done", true);
