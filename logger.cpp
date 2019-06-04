@@ -97,6 +97,9 @@ void logger::event_started(EVENT_TYPE event_type) {
 		case EVENT_TYPE::ALS_ITER:
 			als_iter_started_ts = seconds();
 			break;
+		case EVENT_TYPE::MF_MODEL_TRAINING:
+			mf_model_training_started_ts = seconds();
+			break;
 		default:
 			break;
 	}
@@ -121,6 +124,10 @@ void logger::event_finished(EVENT_TYPE event_type, bool write_cout) {
 		case EVENT_TYPE::ALS_ITER:
 			event_elapsed = curr_ts - als_iter_started_ts;
 			als_update_v_started_ts = 0;
+			break;
+		case EVENT_TYPE::MF_MODEL_TRAINING:
+			event_elapsed = curr_ts - mf_model_training_started_ts;
+			mf_model_training_started_ts = 0;
 			break;
 		default:
 			break;
@@ -150,6 +157,7 @@ std::string logger::to_string(EVENT_TYPE event_type) {
 		case EVENT_TYPE::ALS_UPDATE_U: return "ALS_UPDATE_U";
 		case EVENT_TYPE::ALS_UPDATE_V: return "ALS_UPDATE_V";
 		case EVENT_TYPE::ALS_ITER: return "ALS_ITER";
+		case EVENT_TYPE::MF_MODEL_TRAINING: return "MF_MODEL_TRAINING";
 		default: return "UNKNOWN";
 	}
 }

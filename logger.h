@@ -8,7 +8,8 @@ struct logger {
 	enum class EVENT_TYPE {
 		ALS_UPDATE_U = 0,
 		ALS_UPDATE_V,
-		ALS_ITER
+		ALS_ITER,
+		MF_MODEL_TRAINING
 	};
 
 	void init(const std::string &log_folder);
@@ -28,6 +29,8 @@ struct logger {
 	double als_update_v_started_ts = 0;
 
 	double als_iter_started_ts = 0;
+
+	double mf_model_training_started_ts = 0;
 
 	std::string log_folder;
 	std::string log_name;

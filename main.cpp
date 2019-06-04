@@ -84,10 +84,26 @@ int main(int argc, char **argv) {
 	for(size_t i = 0; i < als_runs; ++i) {
 
 #ifdef USE_LOGGER
+		// MF_MODEL_TRAINING event is meant for comparing performance with cumf_als and cumf_sgd
+		// started after host loading train and test ratings from disk, before first cudaMemcpy to device
+		g_logger.event_started(logger::EVENT_TYPE::MF_MODEL_TRAINING);
+
 		g_logger.run_iter = i + 1;
 #endif
+
 		als_model model(host_train_ratings, host_test_ratings, f, lambda, als_iters, als_calculate_vtvs_type, als_solve_type, smem_col_cnt, m_batches, n_batches);
+
+#ifdef USE_LOGGER
+	g_logger.log("als model constructor done", true);
+#endif
+
 		model.train();
+
+#ifdef USE_LOGGER
+		// MF_MODEL_TRAINING event finishes after model (user and item factors) calculation before its saving to disk
+		g_logger.event_finished(logger::EVENT_TYPE::MF_MODEL_TRAINING, true);
+#endif
+
 	}
 
 #ifdef USE_LOGGER
