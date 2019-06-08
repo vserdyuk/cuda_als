@@ -12,11 +12,15 @@
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="als_model.cu" />
+    <CudaCompile Include="cumf_als_cg\cg.cu" />
+    <CudaCompile Include="cumf_als_cg\device_utilities.cu" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="als_model.h" />
     <ClInclude Include="cuda_common.h" />
     <ClInclude Include="cuda_sparse_matrix.h" />
+    <ClInclude Include="cumf_als_cg\cg.h" />
+    <ClInclude Include="cumf_als_cg\device_utilities.h" />
     <ClInclude Include="logger.h" />
   </ItemGroup>
   <ItemGroup>

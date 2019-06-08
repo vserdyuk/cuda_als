@@ -1,0 +1,34 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CudaCompile Include="als_model.cu" />
+    <CudaCompile Include="cumf_als_cg\cg.cu">
+      <Filter>cumf_als_cg</Filter>
+    </CudaCompile>
+    <CudaCompile Include="cumf_als_cg\device_utilities.cu">
+      <Filter>cumf_als_cg</Filter>
+    </CudaCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="cuda_sparse_matrix.cpp" />
+    <ClCompile Include="logger.cpp" />
+    <ClCompile Include="main.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="als_model.h" />
+    <ClInclude Include="cuda_common.h" />
+    <ClInclude Include="cuda_sparse_matrix.h" />
+    <ClInclude Include="logger.h" />
+    <ClInclude Include="cumf_als_cg\cg.h">
+      <Filter>cumf_als_cg</Filter>
+    </ClInclude>
+    <ClInclude Include="cumf_als_cg\device_utilities.h">
+      <Filter>cumf_als_cg</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="cumf_als_cg">
+      <UniqueIdentifier>{e7e9d6c5-67cb-4847-ac3f-93edaa7de80b}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>
