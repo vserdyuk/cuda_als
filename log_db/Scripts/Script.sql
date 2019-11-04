@@ -75,14 +75,44 @@ GROUP BY
 ;
 
 
+DELETE FROM ml_latest_log;
+
+DELETE FROM netflix_log;
+
+
+SELECT
+--	netflix_log.log_name,
+	COUNT(DISTINCT log_name) AS log_name_distinct_cnt,
+	COUNT(run_iter) AS run_iter_cnt,
+	COUNT(als_iter) AS als_iter_cnt,
+	"text",
+	AVG(event_elapsed) AS event_elapsed_avg
+FROM netflix_log
+WHERE LENGTH(event_elapsed) > 0
+GROUP BY
+--	netflix_log.log_name,
+	"text"
+;
 
 
 
-
-
-
-
-
+SELECT
+--	COUNT(DISTINCT netflix_log.log_name) AS log_name_distinct_cnt,
+	netflix_log.log_name,	
+	COUNT(run_iter) AS run_iter_cnt,
+	COUNT(als_iter) AS als_iter_cnt,
+	text,
+	AVG(elapsed) as elapsed_avg
+FROM netflix_log
+WHERE
+	text LIKE "%via cuSPARSE and cuBLAS done%"
+	OR text LIKE "%calculation done type=%"
+	OR text LIKE "%batched LU factorization%"
+	OR text LIKE "%batched solve done%"
+GROUP BY
+	text,
+	netflix_log.log_name
+;
 
 
 
