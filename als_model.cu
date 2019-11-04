@@ -1560,6 +1560,9 @@ als_model::~als_model() {
 
 	CUDA_CHECK(cudaFree(d_xtxs));
 
+	CUDA_CHECK(cudaFree(d_VTRT));
+	CUDA_CHECK(cudaFree(d_UTR));
+
 	CUSPARSE_CHECK(cusparseDestroy(cusparse_handle));
 	CUBLAS_CHECK(cublasDestroy(cublas_handle));
 }
