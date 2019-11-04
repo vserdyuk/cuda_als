@@ -6,6 +6,8 @@
 #include "cuda_sparse_matrix.h"
 #include "als_model.h"
 
+#include "INIReader.h"
+
 #ifdef USE_LOGGER
 #include "logger.h"
 logger g_logger;
@@ -14,42 +16,38 @@ logger g_logger;
 #define CUDA_DEVICE_ID 0
 
 int main(int argc, char **argv) {
-	int m = atoi(argv[1]);
-	int n = atoi(argv[2]);
-	//int f = atoi(argv[3]);
-	//int f = 32;
-	//int f = 64;
-	int f = 80;
-	//int f = 96;
-	//int f = 128;
-	long nnz_train = atoi(argv[4]);
-	long nnz_test = atoi(argv[5]);
-	float lambda = atof(argv[6]);
-	int als_iters = atoi(argv[7]);
-	std::string data_folder = argv[8];
-	int als_runs = atoi(argv[9]);
+	std::string ini_path = argv[1];
 
-	//als_model::CALCULATE_VTVS_TYPE als_calculate_vtvs_type = static_cast<als_model::CALCULATE_VTVS_TYPE>(atoi(argv[10]));
-	//als_model::CALCULATE_VTVS_TYPE als_calculate_vtvs_type = als_model::CALCULATE_VTVS_TYPE::SIMPLE;	// easier debugging
-	//als_model::CALCULATE_VTVS_TYPE als_calculate_vtvs_type = als_model::CALCULATE_VTVS_TYPE::SMEM_ROW_MAJOR;	// easier debugging
-	//als_model::CALCULATE_VTVS_TYPE als_calculate_vtvs_type = als_model::CALCULATE_VTVS_TYPE::SMEM_ROW_MAJOR_NO_CALC;	// easier debugging
-	//als_model::CALCULATE_VTVS_TYPE als_calculate_vtvs_type = als_model::CALCULATE_VTVS_TYPE::SMEM_COL_MAJOR;	// easier debugging
-	//als_model::CALCULATE_VTVS_TYPE als_calculate_vtvs_type = als_model::CALCULATE_VTVS_TYPE::SMEM_ROW_MAJOR_TENSOR;	// easier debugging
-	//als_model::CALCULATE_VTVS_TYPE als_calculate_vtvs_type = als_model::CALCULATE_VTVS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC;	// easier debugging
-	als_model::CALCULATE_VTVS_TYPE als_calculate_vtvs_type = als_model::CALCULATE_VTVS_TYPE::SMEM_ROW_MAJOR_TENSOR_SYMMETRIC_MULT_FRAG;	// easier debugging
+	INIReader ini_reader(ini_path);
 
-	//als_model::SOLVE_TYPE als_solve_type = static_cast<als_model::SOLVE_TYPE>(atoi(argv[11]));
-	//als_model::SOLVE_TYPE als_solve_type = als_model::SOLVE_TYPE::LU;	// easier debugging
-	als_model::SOLVE_TYPE als_solve_type = als_model::SOLVE_TYPE::CUMF_ALS_CG_FP32;	// easier debugging
+	if (ini_reader.ParseError() != 0) {
+		std::cout << "Can't load " << ini_path << "\n";
+		return 1;
+	}
+
+	int m = ini_reader.GetInteger("data", "m", 0);
+	int n = ini_reader.GetInteger("data", "n", 0);
+	int f = ini_reader.GetInteger("als", "f", 0);
+
+	long nnz_train = ini_reader.GetInteger("data", "nnz_train", 0);
+	long nnz_test = ini_reader.GetInteger("data", "nnz_test", 0);
+	float lambda = ini_reader.GetFloat("als", "lambda", 0);
+	int als_iters = ini_reader.GetInteger("als", "als_iters", 0);
+	std::string data_folder = ini_reader.Get("data", "data_folder", "");
+	int als_runs = ini_reader.GetInteger("general", "als_runs", 0);
+
+	als_model::CALCULATE_VTVS_TYPE als_calculate_vtvs_type = static_cast<als_model::CALCULATE_VTVS_TYPE>(ini_reader.GetInteger("als", "als_calculate_vtvs_type", 0));
+
+	als_model::SOLVE_TYPE als_solve_type = static_cast<als_model::SOLVE_TYPE>(ini_reader.GetInteger("als", "als_solve_type", 0));
 
 	int smem_col_cnt = 32;	// shoud be calculated based on device shared memory sized
 	//int smem_col_cnt = 112;	// shoud be calculated based on device shared memory size
 
-	int m_batches = atoi(argv[12]);
-	int n_batches = atoi(argv[13]);
+	int m_batches = ini_reader.GetInteger("als", "m_batches", 0);
+	int n_batches = ini_reader.GetInteger("als", "n_batches", 0);
 
 #ifdef USE_LOGGER
-	std::string log_folder = argv[14];
+	std::string log_folder = ini_reader.Get("general", "log_folder", "");
 
 	std::cout << std::fixed;
 
