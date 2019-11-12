@@ -25,6 +25,7 @@
     <ClInclude Include="cumf_als_cg\device_utilities.h">
       <Filter>cumf_als_cg</Filter>
     </ClInclude>
+    <ClInclude Include="INIReader.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="cumf_als_cg">

@@ -21,6 +21,7 @@
     <ClInclude Include="cuda_sparse_matrix.h" />
     <ClInclude Include="cumf_als_cg\cg.h" />
     <ClInclude Include="cumf_als_cg\device_utilities.h" />
+    <ClInclude Include="INIReader.h" />
     <ClInclude Include="logger.h" />
   </ItemGroup>
   <ItemGroup>
